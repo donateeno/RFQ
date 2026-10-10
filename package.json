@@ -1,0 +1,10 @@
+{
+  "name": "rfq-price-approval",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Special price request & approval web app (Google Apps Script + Google Sheets)",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "preview": "node dev/server.js"
+  }
+}
