@@ -1,0 +1,364 @@
+'use strict';
+/**
+ * Imports from Google Sheets exports (CSV upload by an admin, or 2-D `values` arrays sent by n8n).
+ *
+ *   products            flat: brand, key, name, cost, normal_price
+ *   cost_price_sheet    raw "_Cost&Price" tab (A:C EVE model | E:G GT hot price | I:L Foster code)
+ *   cal_dummy_sheet     raw "_CalDummy" tab (dummy set name, total cost in L, total price in S)
+ *   project_costs       flat: project_key, customer, description, cost, normal_price   (group: JS)
+ *   landed_items        flat or raw "_Manual.Cal": item_code/Ref. ItmCode, description/ItmDescrption,
+ *                       factory_rmb/FactoryRMB, exch_rate/ExCh. Rate, bp_disc/BP Disc., incoterm, misc_charge
+ *   GT.EVE_RFQ | GT.FOSTER_RFQ | BT.EVE_RFQ | BT.FOSTER_RFQ | OFFI_RFQ   old request tabs
+ */
+const { calculate, UserError } = require('../pricing');
+const { tx } = require('../db');
+const { getSettings, getCatalog, lookupItem } = require('./catalog');
+
+// ---------------------------------------------------------------- parsing helpers
+
+/** RFC 4180 CSV → string[][] (handles quotes, commas and newlines inside quotes, BOM). */
+function parseCsv(text) {
+  text = String(text || '').replace(/^﻿/, '');
+  const rows = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else field += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); rows.push(row); row = []; field = '';
+    } else field += ch;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+const cell = (row, i) => (row && row[i] !== undefined && row[i] !== null ? String(row[i]).trim() : '');
+
+/** "19,990.00" → 19990, "18.00%" → 0.18, "#N/A"/"" → null */
+function toNum(v) {
+  const s = String(v === null || v === undefined ? '' : v).trim();
+  if (!s || s.startsWith('#') || s === '-') return null;
+  const pct = s.endsWith('%');
+  const n = Number(s.replace(/[,%฿\s]/g, ''));
+  if (!Number.isFinite(n)) return null;
+  return pct ? n / 100 : n;
+}
+
+/** Fractions may come as 0.18, 18% or 18 → 0.18 */
+function toFraction(v) {
+  const n = toNum(v);
+  if (n === null) return null;
+  return n > 1 ? n / 100 : n;
+}
+
+/**
+ * Sheet date text → 'YYYY-MM-DD'. The source sheets mix two display formats:
+ * 4-digit year = M/D/YYYY (sheet locale), 2-digit year = DD/MM/YY (custom format).
+ */
+function parseSheetDate(v) {
+  const s = String(v || '').trim();
+  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return valid(+m[1], +m[2], +m[3]);
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:\s|$)/.exec(s);
+  if (!m) return null;
+  if (m[3].length === 4) return valid(+m[3], +m[1], +m[2]);
+  return valid(2000 + +m[3], +m[2], +m[1]);
+  function valid(y, mo, d) {
+    if (y < 2015 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    const dt = new Date(Date.UTC(y, mo - 1, d));
+    if (dt.getUTCMonth() !== mo - 1) return null;
+    return dt.toISOString().slice(0, 10);
+  }
+}
+
+function addDays(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+/** Finds the header row (first row containing one of `marker` names) and maps names → index. */
+function headerMap(values, aliases) {
+  const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  for (let r = 0; r < Math.min(values.length, 10); r++) {
+    const names = values[r].map(norm);
+    const map = {};
+    Object.keys(aliases).forEach((k) => {
+      const idx = names.findIndex((n) => aliases[k].map(norm).includes(n));
+      if (idx !== -1) map[k] = idx;
+    });
+    if (map.key !== undefined) return { row: r, map };
+  }
+  throw new UserError('ไม่พบหัวคอลัมน์ที่ต้องการ (' + aliases.key.join(' / ') + ')');
+}
+
+// ---------------------------------------------------------------- cost masters
+
+async function upsertProducts(db, products) {
+  let n = 0;
+  await tx(db, async (c) => {
+    for (const p of products) {
+      await c.query(
+        `insert into products (brand, key, name, cost, normal_price, source, updated_at) values ($1, $2, $3, $4, $5, $6, now())
+         on conflict (brand, key_norm) do update set key = excluded.key, name = excluded.name,
+           cost = coalesce(excluded.cost, products.cost), normal_price = coalesce(excluded.normal_price, products.normal_price),
+           source = excluded.source, updated_at = now()`,
+        [p.brand, p.key, p.name || p.key, p.cost, p.normalPrice, p.source || '']);
+      n++;
+    }
+  });
+  return n;
+}
+
+function productsFromCostPriceSheet(values) {
+  const eve = new Map();
+  const put = (key, cost, price, source, override) => {
+    key = String(key || '').trim();
+    if (!key || key.startsWith('#')) return;
+    const id = key.toUpperCase();
+    const cur = eve.get(id);
+    cost = toNum(cost); price = toNum(price);
+    if (!cur) eve.set(id, { brand: 'EVE', key, name: key, cost, normalPrice: price, source });
+    else if (override) {
+      if (cost !== null) cur.cost = cost;
+      if (price !== null) cur.normalPrice = price;
+      cur.source = source;
+    } else {
+      if (cur.cost === null) cur.cost = cost;
+      if (cur.normalPrice === null) cur.normalPrice = price;
+    }
+  };
+  const data = values.slice(1);
+  data.forEach((r) => put(r[0], r[1], r[2], 'EVE master', false));
+  data.forEach((r) => put(r[4], r[5], r[6], 'GT hot price', true));
+  const foster = new Map();
+  data.forEach((r) => {
+    const code = cell(r, 8);
+    if (!code || code.startsWith('#') || foster.has(code.toUpperCase())) return;
+    foster.set(code.toUpperCase(), { brand: 'FOSTER', key: code, name: cell(r, 9) || code, cost: toNum(r[10]), normalPrice: toNum(r[11]), source: 'Foster master' });
+  });
+  return [...eve.values(), ...foster.values()];
+}
+
+function productsFromCalDummy(values) {
+  return values.slice(1).map((r) => ({ brand: 'EVE', key: cell(r, 0), name: cell(r, 0), cost: toNum(r[11]), normalPrice: toNum(r[18]), source: 'Dummy set' }))
+    .filter((p) => p.key && !p.key.startsWith('#') && p.key.toUpperCase() !== 'DUMMY SET NAME');
+}
+
+function productsFlat(values, defaultBrand) {
+  const { row, map } = headerMap(values, {
+    key: ['key', 'model', 'sku', 'code', "eve's model", 'ref. code', 'ชื่อสินค้า'],
+    brand: ['brand'], name: ['name', 'description', 'model description'],
+    cost: ['cost', 'cost/unit', 'smgcost'], normalPrice: ['normal_price', 'normal price', 'price', 'retail price', 'ขายปกติ']
+  });
+  return values.slice(row + 1).map((r) => ({
+    brand: (cell(r, map.brand) || defaultBrand || '').toUpperCase(),
+    key: cell(r, map.key), name: cell(r, map.name), cost: toNum(r[map.cost]), normalPrice: toNum(r[map.normalPrice]), source: 'Upload'
+  })).filter((p) => p.key && !p.key.startsWith('#'));
+}
+
+async function importProjectCosts(db, values, groupId) {
+  const { row, map } = headerMap(values, {
+    key: ['project_key', 'proj. id', 'project', 'project id', '#proj. tag'],
+    customer: ['customer', 'ชื่อลูกค้า', "owner's name"], description: ['description', '#tag', 'หมายเหตุ'],
+    cost: ['cost', 'ต้นทุนขาย (-vat)', 'รวมต้นทุนขาย (thb, -vat)', 'รวมต้นทุนขาย'], normalPrice: ['normal_price', 'ราคาขายปกติ']
+  });
+  let imported = 0;
+  await tx(db, async (c) => {
+    for (const r of values.slice(row + 1)) {
+      const key = cell(r, map.key);
+      if (!key) continue;
+      await c.query(
+        `insert into project_costs (group_id, project_key, customer, description, cost, normal_price, source, updated_at)
+         values ($1, $2, $3, $4, $5, $6, 'Upload', now())
+         on conflict (group_id, key_norm) do update set project_key = excluded.project_key, customer = excluded.customer,
+           description = excluded.description, cost = excluded.cost, normal_price = excluded.normal_price, updated_at = now()`,
+        [groupId, key, cell(r, map.customer), cell(r, map.description), toNum(r[map.cost]), toNum(r[map.normalPrice])]);
+      imported++;
+    }
+  });
+  return { imported };
+}
+
+async function importLandedItems(db, values, groupId) {
+  const { row, map } = headerMap(values, {
+    key: ['item_code', 'ref. itmcode'], description: ['description', 'itmdescrption', 'itmdescription'],
+    factoryRmb: ['factory_rmb', 'factoryrmb'], exchRate: ['exch_rate', 'exch. rate'], bpDisc: ['bp_disc', 'bp disc.'],
+    incoterm: ['incoterm'], misc: ['misc_charge', 'misc. charge']
+  });
+  let imported = 0;
+  const errors = [];
+  await tx(db, async (c) => {
+    for (const [i, r] of values.slice(row + 1).entries()) {
+      const key = cell(r, map.key);
+      if (!key) continue;
+      const rmb = toNum(r[map.factoryRmb]);
+      const rate = toNum(r[map.exchRate]);
+      if (!(rmb > 0) || !(rate > 0)) { errors.push(`แถว ${row + i + 2} (${key}): ไม่มี FactoryRMB หรือ ExCh. Rate`); continue; }
+      const inc = cell(r, map.incoterm).toUpperCase();
+      await c.query(
+        `insert into landed_items (group_id, item_code, description, factory_rmb, exch_rate, bp_disc, incoterm, misc_charge, source, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, 'Upload', now())
+         on conflict (group_id, key_norm) do update set item_code = excluded.item_code, description = excluded.description,
+           factory_rmb = excluded.factory_rmb, exch_rate = excluded.exch_rate, bp_disc = excluded.bp_disc,
+           incoterm = excluded.incoterm, misc_charge = excluded.misc_charge, updated_at = now()`,
+        [groupId, key, cell(r, map.description), rmb, rate, toFraction(r[map.bpDisc]) || 0,
+          inc === 'EXW' || inc === 'FOB' ? inc : null, toNum(r[map.misc]) || 0]);
+      imported++;
+    }
+  });
+  return { imported, errors };
+}
+
+// ---------------------------------------------------------------- legacy requests
+
+/** Column layout of each old RFQ tab (0-based). */
+const LEGACY = {
+  'GT.EVE_RFQ': { channel: 'GT_EVE', key: 6, customer: 3, project: 4, note: 5, normal: 7, special: 8, disc: [9, 10, 11], status: 14, decidedAt: 15, decidedBy: 16, requester: 17, requestDate: 18 },
+  'GT.FOSTER_RFQ': { channel: 'GT_FOSTER', key: 5, customer: 3, project: 4, normal: 7, special: 8, disc: [9, 10, 11], status: 14, decidedAt: 15, decidedBy: 16, requester: 17, requestDate: 18 },
+  'BT.EVE_RFQ': { channel: 'BT_EVE', key: 6, branch: 4, project: 3, note: 5, normal: 7, special: 8, status: 11, decidedAt: 12, decidedBy: 13, requester: 14 },
+  'BT.FOSTER_RFQ': { channel: 'BT_FOSTER', key: 5, branch: 4, project: 3, note: 15, normal: 7, special: 8, status: 11, decidedAt: 12, decidedBy: 13, requester: 14 },
+  'OFFI_RFQ': { channel: offiChannel, key: 6, customer: 4, project: 3, note: 5, normal: 7, special: 8, disc: [9], status: 13, decidedAt: 14, decidedBy: 15, requester: 16 }
+};
+
+/** OFFI branch text → channel. Unknown text falls back to showroom and is flagged. */
+function offiChannel(row) {
+  const t = cell(row, 4).toLowerCase();
+  const rules = [['shopee', 'OFFI_SHOPEE'], ['lazada', 'OFFI_LAZADA'], ['tiktok', 'OFFI_TIKTOK'], ['homepro', 'OFFI_HOMEPRO'],
+    ['line', 'OFFI_LINE'], ['outlet', 'OFFI_OUTLET'], ['first service', 'OFFI_OUTLET'], ['showroom', 'OFFI_SHOWROOM'],
+    ['web', 'OFFI_WEB'], ['makro', 'OFFI_WEB'], ['amaze', 'OFFI_WEB'], ['บุญถาวร', 'OFFI_WEB']];
+  const hit = rules.find(([k]) => t.includes(k));
+  return { id: hit ? hit[1] : 'OFFI_SHOWROOM', guessed: !hit };
+}
+
+async function importLegacy(db, type, values, today) {
+  const layout = LEGACY[type];
+  const settings = await getSettings(db);
+  const catalog = await getCatalog(db, true);
+  const findChannel = (id) => {
+    for (const g of catalog) { const ch = g.channels.find((c) => c.id === id); if (ch) return { group: g, channel: ch }; }
+    throw new UserError('ไม่พบช่องทาง ' + id);
+  };
+  const res = { type, imported: 0, skipped: 0, errors: [] };
+  const rows = [];
+  for (const [i, v] of values.slice(1).entries()) {
+    const id = cell(v, 0);
+    if (!id || !cell(v, layout.key)) continue;
+    try {
+      rows.push(await legacyRow(db, v, layout, findChannel, settings, today));
+    } catch (e) {
+      res.errors.push(`แถว ${i + 2} (${id}): ${e.message}`);
+    }
+  }
+  await tx(db, async (c) => {
+    for (const r of rows) {
+      const cols = Object.keys(r);
+      const out = await c.query(
+        `insert into requests (${cols.join(', ')}) values (${cols.map((_, i) => '$' + (i + 1)).join(', ')}) on conflict (id) do nothing`,
+        cols.map((k) => r[k]));
+      if (out.rowCount) res.imported++; else res.skipped++;
+    }
+    await syncCounters(c);
+  });
+  return res;
+}
+
+async function legacyRow(db, v, L, findChannel, settings, today) {
+  const ch = typeof L.channel === 'function' ? L.channel(v) : { id: L.channel };
+  const { group, channel } = findChannel(ch.id);
+  const flags = ['นำเข้าจากชีตเดิม: ต้นทุน/%MU คิดจากต้นทุน ณ วันนำเข้า'];
+  if (ch.guessed) flags.push(`ช่องทางเดิม "${cell(v, 4)}" ไม่ชัดเจน — จัดเป็น ${channel.name}`);
+
+  const item = await lookupItem(db, group, channel, cell(v, L.key));
+  const productKey = cell(v, L.key);
+  const productName = item ? item.name : (channel.brand === 'FOSTER' ? cell(v, 6) || productKey : productKey);
+
+  let discounts;
+  if (L.disc) {
+    discounts = channel.discounts.map((d, i) => {
+      let n = L.disc[i] === undefined ? null : toNum(v[L.disc[i]]);
+      if (n === null) return 0;
+      if (n >= 1) { flags.push(`ส่วนลดเดิม ${round2(n * 100)}% ถูกแปลงเป็น ${round2(n)}%`); n = n / 100; }
+      return n;
+    });
+  } else {
+    discounts = channel.discounts.map((d) => d.default || 0);
+  }
+
+  let normal = toNum(v[L.normal]);
+  if (normal === null && item) normal = item.normalPrice;
+  const special = toNum(v[L.special]);
+  const calc = special > 0
+    ? calculate({ formula: channel.formula, normalPrice: normal, specialPrice: special, discounts, cost: item ? item.cost : null, vatRate: settings.VAT_RATE, rules: group.indicatorRules })
+    : { cost: null, netIncVat: null, netExVat: null, gain: null, mu: null, indicator: 'NO COST' };
+  if (!item) flags.push('ไม่พบในฐานข้อมูลต้นทุน');
+  if (normal > 0 && special > normal) flags.push('ราคาพิเศษสูงกว่าราคาปกติ');
+
+  const requested = (L.requestDate !== undefined && parseSheetDate(v[L.requestDate])) || parseSheetDate(v[1]) || parseSheetDate(v[L.decidedAt]);
+  const start = parseSheetDate(v[1]) || requested;
+  let end = parseSheetDate(v[2]);
+  if (start && (!end || end < start)) end = addDays(start, settings.DEFAULT_VALIDITY_DAYS);
+
+  const raw = cell(v, L.status).toLowerCase();
+  let status;
+  if (raw.startsWith('approve')) status = 'Approved';
+  else if (raw.startsWith('cancel')) status = 'Cancelled';
+  else if (raw.startsWith('reject')) status = 'Rejected';
+  else status = end && end < today ? 'Closed' : 'Pending';
+  const decided = status === 'Approved' || status === 'Cancelled' || status === 'Rejected';
+
+  const customer = L.branch !== undefined ? ('บุญถาวร ' + cell(v, L.branch)).trim() : cell(v, L.customer);
+  return {
+    id: cell(v, 0), batch_id: null, group_id: group.id, channel_id: channel.id, cost_source: group.costSource, brand: channel.brand,
+    customer, project: cell(v, L.project), note: L.note !== undefined ? cell(v, L.note) : '',
+    product_key: productKey, product_name: productName, qty: null,
+    normal_price: normal, special_price: special, discounts: JSON.stringify(discounts), discount_labels: JSON.stringify(channel.discounts.map((d) => d.label)),
+    cost: calc.cost, net_inc_vat: calc.netIncVat, net_ex_vat: calc.netExVat, gain: calc.gain, mu: calc.mu, indicator: calc.indicator,
+    status, start_date: start, end_date: end,
+    requester: cell(v, L.requester).toLowerCase(),
+    requested_at: requested ? requested + 'T09:00:00+07:00' : null,
+    decided_by: decided ? cell(v, L.decidedBy).toLowerCase() || null : null,
+    decided_at: decided && parseSheetDate(v[L.decidedAt]) ? parseSheetDate(v[L.decidedAt]) + 'T12:00:00+07:00' : null,
+    decision_comment: status === 'Closed' ? 'หมดอายุโดยไม่มีการพิจารณา (ข้อมูลเดิม)' : '',
+    flags, source: 'LEGACY:' + Object.keys(LEGACY).find((k) => LEGACY[k] === L)
+  };
+}
+
+function round2(n) { return Math.round(n * 100) / 100; }
+
+/** Keeps id_counters ahead of every numeric id already in requests. */
+async function syncCounters(c) {
+  const prefixes = (await c.query('select prefix from id_counters')).rows.map((r) => r.prefix);
+  for (const p of prefixes) {
+    const re = '^' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([0-9]+)$';
+    await c.query(
+      `update id_counters set last_value = greatest(last_value, coalesce((select max((regexp_match(id, $2))[1]::int) from requests where id ~ $2), 0))
+       where prefix = $1`, [p, re]);
+  }
+}
+
+// ---------------------------------------------------------------- entry point
+
+async function importData(db, { type, values, brand, group, today }) {
+  if (!Array.isArray(values) || values.length < 2) throw new UserError('ไฟล์ว่างหรือไม่มีข้อมูล');
+  if (values.length > 60000) throw new UserError('ข้อมูลมากเกินไป (สูงสุด 60,000 แถว)');
+  switch (type) {
+    case 'products': return { type, imported: await upsertProducts(db, productsFlat(values, brand)) };
+    case 'cost_price_sheet': return { type, imported: await upsertProducts(db, productsFromCostPriceSheet(values)) };
+    case 'cal_dummy_sheet': return { type, imported: await upsertProducts(db, productsFromCalDummy(values)) };
+    case 'project_costs': return { type, ...(await importProjectCosts(db, values, group || 'JS')) };
+    case 'landed_items': return { type, ...(await importLandedItems(db, values, group || 'JS_OVS')) };
+    default:
+      if (LEGACY[type]) return importLegacy(db, type, values, today);
+      throw new UserError('ประเภทข้อมูลไม่ถูกต้อง: ' + type);
+  }
+}
+
+module.exports = { importData, parseCsv, parseSheetDate, toNum, LEGACY_TYPES: Object.keys(LEGACY) };

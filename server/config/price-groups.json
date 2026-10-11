@@ -1,0 +1,154 @@
+{
+  "$comment": [
+    "Source of truth for price groups and channels. Synced into the database on every start.",
+    "Change it with a pull request: the AI review and your approval protect these business rules.",
+    "costSource: PRODUCT = product master (brand + model/code) | PROJECT = cost per project id | LANDED = imported item, cost calculated from factory price",
+    "formula: MULTIPLY = special x (1-d1)(1-d2)(1-d3) | GP_ON_NORMAL = normal x (1-d1)(1-d2)(1-d3) - (normal - special)",
+    "indicatorRules: checked in order; 'below' = strictly less than, 'upTo' = less than or equal; anything above the last rule is OKAY",
+    "discount: label, default, min, max (fractions, 0.2 = 20%), editable. Non-editable discounts are always the default."
+  ],
+  "groups": [
+    {
+      "id": "GT",
+      "name": "GT ร้านค้า / โครงการ",
+      "description": "Price Group GT — ร้านค้าตัวแทนและงานโครงการ (เดิม: RFQ MGR GT)",
+      "costSource": "PRODUCT",
+      "indicatorRules": [
+        { "indicator": "ขาดทุน", "below": 0.18 },
+        { "indicator": "VERY LOW", "upTo": 0.20 },
+        { "indicator": "LOW", "upTo": 0.25 }
+      ],
+      "channels": [
+        {
+          "id": "GT_EVE", "name": "GT – EVE", "brand": "EVE", "idPrefix": "GT.", "formula": "MULTIPLY",
+          "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "discounts": [
+            { "label": "ส่วนลด GP", "default": 0.18, "min": 0, "max": 0.6, "editable": true },
+            { "label": "ส่วนลด 2", "default": 0, "min": 0, "max": 0.5, "editable": true },
+            { "label": "ส่วนลด 3", "default": 0, "min": 0, "max": 0.5, "editable": true }
+          ]
+        },
+        {
+          "id": "GT_FOSTER", "name": "GT – FOSTER", "brand": "FOSTER", "idPrefix": "GT.FOSTER.", "formula": "MULTIPLY",
+          "keyLabel": "Foster Code",
+          "discounts": [
+            { "label": "ส่วนลด GP", "default": 0.18, "min": 0, "max": 0.6, "editable": true },
+            { "label": "ส่วนลด 2", "default": 0, "min": 0, "max": 0.5, "editable": true },
+            { "label": "ส่วนลด 3", "default": 0, "min": 0, "max": 0.5, "editable": true }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "BT",
+      "name": "บุญถาวร (BT)",
+      "description": "Price Group BT — ขอราคาพิเศษช่องทางบุญถาวร (เดิม: RFQ PriceGroup BT). GP + MKT fee คงที่ 27.8304%",
+      "costSource": "PRODUCT",
+      "indicatorRules": [
+        { "indicator": "ขาดทุน", "below": 0.18 },
+        { "indicator": "VERY LOW", "upTo": 0.20 },
+        { "indicator": "LOW", "upTo": 0.25 }
+      ],
+      "channels": [
+        {
+          "id": "BT_EVE", "name": "บุญถาวร – EVE", "brand": "EVE", "idPrefix": "BT.", "formula": "GP_ON_NORMAL",
+          "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "description": "GP คิดจากราคาขายปกติ แล้วหักส่วนต่างราคาพิเศษ",
+          "discounts": [
+            { "label": "GP + MKT FEE (BT)", "default": 0.278304, "editable": false }
+          ]
+        },
+        {
+          "id": "BT_FOSTER", "name": "บุญถาวร – FOSTER", "brand": "FOSTER", "idPrefix": "BTFOSTER.", "formula": "MULTIPLY",
+          "keyLabel": "Foster Code",
+          "discounts": [
+            { "label": "GP + MKT FEE (BT)", "default": 0.278304, "editable": false }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "OFFI",
+      "name": "Official Online / Offline",
+      "description": "Price Group DGT.OFFI — ช่องทางขายตรงของบริษัท (เดิม: RFQ PriceGroup DGT.OFFI). GP = ค่าธรรมเนียมแพลตฟอร์ม/โชว์รูม",
+      "costSource": "PRODUCT",
+      "indicatorRules": [
+        { "indicator": "ขาดทุน", "below": 0.18 },
+        { "indicator": "VERY LOW", "upTo": 0.20 },
+        { "indicator": "LOW", "upTo": 0.25 }
+      ],
+      "channels": [
+        { "id": "OFFI_SHOPEE", "name": "Shopee Mall", "brand": "EVE", "idPrefix": "OFFI.", "formula": "MULTIPLY", "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "description": "ค่าธรรมเนียม 27.29–35.31% — GP ห้ามต่ำกว่า 37%",
+          "discounts": [{ "label": "GP (ค่าธรรมเนียม)", "default": 0.37, "min": 0.37, "max": 0.6, "editable": true }] },
+        { "id": "OFFI_LAZADA", "name": "Lazada Mall", "brand": "EVE", "idPrefix": "OFFI.", "formula": "MULTIPLY", "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "description": "ค่าธรรมเนียม 31–34% — GP ห้ามต่ำกว่า 37%",
+          "discounts": [{ "label": "GP (ค่าธรรมเนียม)", "default": 0.37, "min": 0.37, "max": 0.6, "editable": true }] },
+        { "id": "OFFI_TIKTOK", "name": "TikTok Shop", "brand": "EVE", "idPrefix": "OFFI.", "formula": "MULTIPLY", "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "description": "ค่าธรรมเนียม 5.35–11.77% — GP ห้ามต่ำกว่า 20%",
+          "discounts": [{ "label": "GP (ค่าธรรมเนียม)", "default": 0.2, "min": 0.2, "max": 0.6, "editable": true }] },
+        { "id": "OFFI_HOMEPRO", "name": "HomePro Online", "brand": "EVE", "idPrefix": "OFFI.", "formula": "MULTIPLY", "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "description": "ค่าธรรมเนียม 14% — GP ห้ามต่ำกว่า 20%",
+          "discounts": [{ "label": "GP (ค่าธรรมเนียม)", "default": 0.2, "min": 0.2, "max": 0.6, "editable": true }] },
+        { "id": "OFFI_LINE", "name": "LINE OA / LINE Shopping", "brand": "EVE", "idPrefix": "OFFI.", "formula": "MULTIPLY", "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "description": "GP ห้ามต่ำกว่า 20%",
+          "discounts": [{ "label": "GP (ค่าธรรมเนียม)", "default": 0.2, "min": 0.2, "max": 0.6, "editable": true }] },
+        { "id": "OFFI_WEB", "name": "Website / Online อื่นๆ", "brand": "EVE", "idPrefix": "OFFI.", "formula": "MULTIPLY", "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "description": "Web 2c2p/123, Makro Pro, AMAZE, Nex-Gen — GP ห้ามต่ำกว่า 20%",
+          "discounts": [{ "label": "GP (ค่าธรรมเนียม)", "default": 0.2, "min": 0.2, "max": 0.6, "editable": true }] },
+        { "id": "OFFI_SHOWROOM", "name": "Showroom (NWM / CDC / Westville)", "brand": "EVE", "idPrefix": "OFFI.", "formula": "MULTIPLY", "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "description": "GP โชว์รูม 20%",
+          "discounts": [{ "label": "GP โชว์รูม", "default": 0.2, "min": 0.2, "max": 0.6, "editable": true }] },
+        { "id": "OFFI_OUTLET", "name": "EVE Outlet / First service", "brand": "EVE", "idPrefix": "OFFI.", "formula": "MULTIPLY", "keyLabel": "ชื่อสินค้า / เซ็ต",
+          "description": "ค่าเช่าพื้นที่ GP 12% — กฎเดิม: GP ห้ามต่ำกว่า 20%",
+          "discounts": [{ "label": "GP", "default": 0.2, "min": 0.2, "max": 0.6, "editable": true }] }
+      ]
+    },
+    {
+      "id": "JS",
+      "name": "Joseph Space (โครงการ)",
+      "description": "Joseph Space — ครัว/ตู้/หินสั่งทำ คิดต้นทุนรายโครงการ (เดิม: RFQ JOSEPH SPACE)",
+      "costSource": "PROJECT",
+      "indicatorRules": [
+        { "indicator": "VERY LOW", "below": 0.18 },
+        { "indicator": "LOW", "below": 0.23 }
+      ],
+      "channels": [
+        { "id": "JS_TH", "name": "JS – ผลิตในไทย (TH)", "idPrefix": "JS.TH.", "formula": "MULTIPLY", "keyLabel": "PROJ. ID",
+          "description": "ต้นทุนขายรวม (-VAT) ของโครงการจากใบเสนอราคาโรงงาน (_Qry.PDL)",
+          "discounts": [{ "label": "ส่วนลด", "default": 0, "min": 0, "max": 0.6, "editable": true }] },
+        { "id": "JS_WKTP", "name": "JS – Worktop (หิน)", "idPrefix": "JS.WKTP.", "formula": "MULTIPLY", "keyLabel": "PROJ. ID",
+          "description": "ต้นทุนหิน/ท็อปรายโครงการ",
+          "discounts": [{ "label": "ส่วนลด", "default": 0, "min": 0, "max": 0.6, "editable": true }] }
+      ]
+    },
+    {
+      "id": "JS_OVS",
+      "name": "Joseph Space – นำเข้า (OVS)",
+      "description": "Joseph Space สินค้านำเข้า — ต้นทุน Landed คำนวณจากราคาโรงงาน (RMB) ตามสูตร _Manual.Cal",
+      "costSource": "LANDED",
+      "indicatorRules": [
+        { "indicator": "ขาดทุน", "upTo": 0.15 },
+        { "indicator": "VERY LOW", "upTo": 0.18 },
+        { "indicator": "LOW", "upTo": 0.23 }
+      ],
+      "params": {
+        "usdCny": 6.8436,
+        "exwBelowUsd": 1500,
+        "freightRate": 0.0549,
+        "importTaxExw": 0.08,
+        "markupRate": 0.12,
+        "mktFeeRate": 0.10,
+        "lastMileRate": 0.03, "lastMileMin": 2200,
+        "installRate": 0.20, "installMin": 7800,
+        "errorRate": 0.05,
+        "suggestMultiplier": 2.5
+      },
+      "channels": [
+        { "id": "JS_OVS", "name": "JS – นำเข้า (OVS)", "idPrefix": "JS.OVS.", "formula": "MULTIPLY", "keyLabel": "Ref. ItmCode",
+          "description": "ราคาแนะนำขาย = ROUNDUP(ต้นทุนขาย × 2.5, -3) − 10",
+          "discounts": [{ "label": "Discount", "default": 0.3, "min": 0, "max": 0.6, "editable": true }] }
+      ]
+    }
+  ]
+}

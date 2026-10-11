@@ -1,0 +1,179 @@
+{
+  "name": "RFQ – sync product costs from Google Sheets",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "fc3c52b4-0151-5e3b-9b1b-a5d35ede1032",
+      "name": "Daily 06:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_SPREADSHEET_ID_HERE/values/_Cost%26Price?valueRenderOption=FORMATTED_VALUE",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "04945a90-2fb0-5abe-a849-184e614a5285",
+      "name": "Read _Cost&Price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://rfq.example.com/api/integrations/import/cost_price_sheet",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: $json.values }) }}",
+        "options": {}
+      },
+      "id": "b79b5674-3a24-521e-bd37-bafa7af8fac2",
+      "name": "Import _Cost&Price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "RFQ integration token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_SPREADSHEET_ID_HERE/values/_CalDummy?valueRenderOption=FORMATTED_VALUE",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "253cc9ce-e98e-52fc-88f0-e438035e36f1",
+      "name": "Read _CalDummy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://rfq.example.com/api/integrations/import/cal_dummy_sheet",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: $json.values }) }}",
+        "options": {}
+      },
+      "id": "d7c4b3fe-52c8-5e7e-8506-bda924b0e654",
+      "name": "Import _CalDummy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "RFQ integration token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 06:00": {
+      "main": [
+        [
+          {
+            "node": "Read _Cost&Price",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read _Cost&Price": {
+      "main": [
+        [
+          {
+            "node": "Import _Cost&Price",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Import _Cost&Price": {
+      "main": [
+        [
+          {
+            "node": "Read _CalDummy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read _CalDummy": {
+      "main": [
+        [
+          {
+            "node": "Import _CalDummy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [],
+  "active": false,
+  "staticData": null,
+  "versionId": "bab5c213-913a-49fc-8773-d5146e9401e2",
+  "_comment": "Reads the hidden _Cost&Price and _CalDummy tabs of the GT file (they keep IMPORTRANGE-ing the masters) and upserts them into the app. Add more pairs for Joseph Space: project_costs?group=JS, landed_items?group=JS_OVS."
+}

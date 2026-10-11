@@ -1,0 +1,104 @@
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const { FORMULAS, COST_SOURCES } = require('./pricing');
+const { tx } = require('./db');
+
+const DEFAULT_SETTINGS = [
+  ['VAT_RATE', 0.07, 'VAT ที่ใช้แปลงราคาสุทธิเป็นราคาไม่รวม VAT'],
+  ['DEFAULT_VALIDITY_DAYS', 30, 'จำนวนวันเริ่มต้นระหว่างวันเริ่มและวันสิ้นสุดราคาพิเศษ'],
+  ['MAX_VALIDITY_DAYS', 90, 'ระยะเวลาราคาพิเศษสูงสุดที่ผู้ขอเลือกได้'],
+  ['NOTIFY_EMAILS', '', 'อีเมลเพิ่มเติม (คั่นด้วย ,) ที่ได้รับแจ้งเมื่อมีคำขอใหม่ — Supervisor/Admin ได้รับเสมอ']
+];
+
+function loadPriceGroups(file) {
+  const raw = JSON.parse(fs.readFileSync(file || path.join(__dirname, '..', 'config', 'price-groups.json'), 'utf8'));
+  validatePriceGroups(raw);
+  return raw.groups;
+}
+
+/** Fails fast (and in CI) on a malformed price-groups.json. */
+function validatePriceGroups(raw) {
+  const errors = [];
+  const groupIds = new Set();
+  const channelIds = new Set();
+  (raw.groups || []).forEach((g) => {
+    if (!g.id || groupIds.has(g.id)) errors.push(`group id missing or duplicate: ${g.id}`);
+    groupIds.add(g.id);
+    if (!COST_SOURCES.includes(g.costSource)) errors.push(`${g.id}: costSource must be one of ${COST_SOURCES}`);
+    let prev = -Infinity;
+    (g.indicatorRules || []).forEach((r) => {
+      const v = r.below ?? r.upTo;
+      if (!r.indicator || typeof v !== 'number') errors.push(`${g.id}: bad indicator rule ${JSON.stringify(r)}`);
+      if (v < prev) errors.push(`${g.id}: indicator rules must be ascending`);
+      prev = v;
+    });
+    if (g.costSource === 'LANDED') {
+      ['usdCny', 'exwBelowUsd', 'freightRate', 'importTaxExw', 'markupRate', 'mktFeeRate', 'lastMileRate', 'lastMileMin',
+        'installRate', 'installMin', 'errorRate', 'suggestMultiplier'].forEach((k) => {
+        if (typeof (g.params || {})[k] !== 'number') errors.push(`${g.id}: params.${k} is required`);
+      });
+    }
+    if (!(g.channels || []).length) errors.push(`${g.id}: needs at least one channel`);
+    (g.channels || []).forEach((c) => {
+      if (!c.id || channelIds.has(c.id)) errors.push(`channel id missing or duplicate: ${c.id}`);
+      channelIds.add(c.id);
+      if (!FORMULAS.includes(c.formula)) errors.push(`${c.id}: formula must be one of ${FORMULAS}`);
+      if (!c.idPrefix) errors.push(`${c.id}: idPrefix is required`);
+      if (g.costSource === 'PRODUCT' && !c.brand) errors.push(`${c.id}: brand is required for PRODUCT cost source`);
+      if (!(c.discounts || []).length || c.discounts.length > 3) errors.push(`${c.id}: 1–3 discounts required`);
+      (c.discounts || []).forEach((d) => {
+        const vals = [d.default, d.min ?? 0, d.max ?? 0.99];
+        if (!d.label || vals.some((v) => typeof v !== 'number' || v < 0 || v >= 1)) errors.push(`${c.id}: bad discount ${JSON.stringify(d)}`);
+        if ((d.min ?? 0) > d.default || d.default > (d.max ?? 0.99)) errors.push(`${c.id}: ${d.label} default outside min/max`);
+      });
+    });
+  });
+  if (errors.length) throw new Error('price-groups.json is invalid:\n- ' + errors.join('\n- '));
+}
+
+/** Idempotent: safe on every start. */
+async function seed(pool, cfg, groups) {
+  groups = groups || loadPriceGroups();
+  await tx(pool, async (c) => {
+    for (const [key, value, description] of DEFAULT_SETTINGS) {
+      await c.query('insert into settings (key, value, description) values ($1, $2, $3) on conflict (key) do update set description = excluded.description',
+        [key, JSON.stringify(value), description]);
+    }
+    const groupIds = [];
+    const channelIds = [];
+    for (const [gi, g] of groups.entries()) {
+      groupIds.push(g.id);
+      await c.query(
+        `insert into price_groups (id, name, description, cost_source, indicator_rules, params, sort, active)
+         values ($1, $2, $3, $4, $5, $6, $7, true)
+         on conflict (id) do update set name = excluded.name, description = excluded.description, cost_source = excluded.cost_source,
+           indicator_rules = excluded.indicator_rules, params = excluded.params, sort = excluded.sort, active = true`,
+        [g.id, g.name, g.description || '', g.costSource, JSON.stringify(g.indicatorRules || []), JSON.stringify(g.params || {}), gi]);
+      for (const [ci, ch] of g.channels.entries()) {
+        channelIds.push(ch.id);
+        await c.query(
+          `insert into channels (id, group_id, name, brand, id_prefix, formula, discounts, key_label, description, sort, active)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+           on conflict (id) do update set group_id = excluded.group_id, name = excluded.name, brand = excluded.brand,
+             id_prefix = excluded.id_prefix, formula = excluded.formula, discounts = excluded.discounts,
+             key_label = excluded.key_label, description = excluded.description, sort = excluded.sort, active = true`,
+          [ch.id, g.id, ch.name, ch.brand ? ch.brand.toUpperCase() : null, ch.idPrefix, ch.formula, JSON.stringify(ch.discounts),
+            ch.keyLabel || '', ch.description || '', gi * 100 + ci]);
+        await c.query('insert into id_counters (prefix) values ($1) on conflict do nothing', [ch.idPrefix]);
+      }
+    }
+    // Removed from config → inactive (history keeps pointing at them).
+    await c.query('update channels set active = false where not (id = any($1))', [channelIds]);
+    await c.query('update price_groups set active = false where not (id = any($1))', [groupIds]);
+
+    for (const email of cfg.bootstrapAdmins) {
+      await c.query(`insert into users (email, name, role) values ($1, $2, 'ADMIN') on conflict (email) do nothing`, [email, email.split('@')[0]]);
+    }
+    for (const email of cfg.bootstrapSupervisors) {
+      await c.query(`insert into users (email, name, role) values ($1, $2, 'SUPERVISOR') on conflict (email) do nothing`, [email, email.split('@')[0]]);
+    }
+  });
+}
+
+module.exports = { seed, loadPriceGroups, validatePriceGroups };

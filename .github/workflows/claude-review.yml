@@ -1,0 +1,65 @@
+name: Claude Code Review
+
+# AI review on every pull request. Findings are posted as PR comments; you decide and merge.
+# Needs repository secret CLAUDE_CODE_OAUTH_TOKEN (run `claude setup-token`) and the Claude GitHub App
+# (run `/install-github-app` inside Claude Code). See docs/VPS-SETUP.md §6.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    env:
+      N8N_PR_WEBHOOK_URL: ${{ secrets.N8N_PR_WEBHOOK_URL }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request for the EVE RFQ special-price approval system.
+            Read CLAUDE.md first — its "Review checklist" section is the standard to apply.
+
+            Focus, in this order:
+            1. Cost/margin confidentiality: cost, gain or %MU must never reach a SALES user (API responses, bootstrap, emails, CSV).
+            2. Pricing correctness: any change to src/pricing.js, config/price-groups.json or indicator rules must keep
+               test/pricing.test.js matching the source sheets; flag rule changes (min GP, thresholds) explicitly for the owner.
+            3. Authorization on every RPC function, SQL injection, XSS in the browser code, secrets in code.
+            4. Migrations: append-only, never edit an applied migration.
+            5. Bugs and missing tests.
+
+            Start the comment with one line: "Verdict: ✅ safe to merge" or "Verdict: ⚠️ needs changes" or "Verdict: 🛑 do not merge".
+            Then list findings by severity with file:line. Be concise; skip praise and style nits.
+            Use inline comments for specific lines and `gh pr comment` for the summary.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+
+      - name: Notify n8n (optional)
+        if: always() && env.N8N_PR_WEBHOOK_URL != ''
+        env:
+          N8N_TOKEN: ${{ secrets.N8N_PR_WEBHOOK_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          jq -n --arg title "$PR_TITLE" --arg url "$PR_URL" --arg author "$PR_AUTHOR" --arg result "${{ job.status }}" \
+            '{event:"pr.reviewed", title:$title, url:$url, author:$author, result:$result}' |
+          curl -fsS -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $N8N_TOKEN" --data @- "$N8N_PR_WEBHOOK_URL"

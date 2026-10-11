@@ -1,0 +1,7 @@
+# Every change needs the owner. Pricing rules and deployment are called out explicitly.
+*                                   @donateeno
+/server/config/price-groups.json    @donateeno
+/server/src/pricing.js              @donateeno
+/server/migrations/                 @donateeno
+/deploy/                            @donateeno
+/.github/                           @donateeno

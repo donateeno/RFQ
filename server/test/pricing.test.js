@@ -1,0 +1,130 @@
+'use strict';
+/**
+ * Every expected number below is copied from the live source sheets, so a pass means the web
+ * app reproduces the sheet maths exactly.
+ */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { calculate, landedCost, indicatorFor, resolveDiscounts, roundUpTo } = require('../src/pricing');
+const { loadPriceGroups, validatePriceGroups } = require('../src/seed');
+
+const groups = loadPriceGroups();
+const G = Object.fromEntries(groups.map((g) => [g.id, g]));
+const CH = Object.fromEntries(groups.flatMap((g) => g.channels.map((c) => [c.id, c])));
+const calc = (groupId, channelId, o) => calculate(Object.assign({ formula: CH[channelId].formula, vatRate: 0.07, rules: G[groupId].indicatorRules }, o));
+
+test('GT (RFQ MGR GT _CalEngine, GT.0001): 16,990 less 18% GP, cost 7,402.13 → 43.15% OKAY', () => {
+  const r = calc('GT', 'GT_EVE', { normalPrice: 19990, specialPrice: 16990, discounts: [0.18, 0, 0], cost: 7402.13 });
+  assert.equal(r.netIncVat, 13931.8);
+  assert.equal(r.netExVat, 13020.37);
+  assert.equal(r.gain, 5618.24);
+  assert.equal(r.mu, 0.4315);
+  assert.equal(r.indicator, 'OKAY');
+});
+
+test('BT EVE (RFQ PriceGroup BT _CalEngine, BT.0001): GP on normal price → 30.68% OKAY; BT.0002 → 22.08% LOW', () => {
+  const r = calc('BT', 'BT_EVE', { normalPrice: 19990, specialPrice: 16990, discounts: [0.278304], cost: 7403.23 });
+  assert.equal(r.netIncVat, 11426.7);
+  assert.equal(r.netExVat, 10679.16);
+  assert.equal(r.gain, 3275.93);
+  assert.equal(r.mu, 0.3068);
+  const r2 = calc('BT', 'BT_EVE', { normalPrice: 20990, specialPrice: 20990, discounts: [0.278304], cost: 11031.56 });
+  assert.equal(r2.netExVat, 14157.38);
+  assert.equal(r2.mu, 0.2208);
+  assert.equal(r2.indicator, 'LOW');
+});
+
+test('BT FOSTER (_CalEngineFos&Pro, BTFOSTER.0001): special × (1 − 27.8304%) → 35.14%', () => {
+  const r = calc('BT', 'BT_FOSTER', { normalPrice: 7590, specialPrice: 7500, discounts: [0.278304], cost: 3280.84 });
+  assert.equal(r.netExVat, 5058.62);
+  assert.equal(r.gain, 1777.78);
+  assert.equal(r.mu, 0.3514);
+});
+
+test('OFFI (RFQ PriceGroup DGT.OFFI _CalEngine, OFFI.0001/0002): GP 27% → 36.13% OKAY, 22.97% LOW', () => {
+  const r = calc('OFFI', 'OFFI_SHOWROOM', { normalPrice: 19990, specialPrice: 16990, discounts: [0.27], cost: 7403.23 });
+  assert.equal(r.netIncVat, 12402.7);
+  assert.equal(r.netExVat, 11591.31);
+  assert.equal(r.gain, 4188.08);
+  assert.equal(r.mu, 0.3613);
+  const r2 = calc('OFFI', 'OFFI_SHOWROOM', { normalPrice: 20990, specialPrice: 20990, discounts: [0.27], cost: 11031.56 });
+  assert.equal(r2.mu, 0.2297);
+  assert.equal(r2.indicator, 'LOW');
+});
+
+test('Joseph Space TH (_Cal.TH): project cost vs special price; JS rules have no ขาดทุน level', () => {
+  const a = calc('JS', 'JS_TH', { specialPrice: 95000, discounts: [0], cost: 115630.88 });
+  assert.equal(a.netExVat, 88785.05);
+  assert.equal(a.gain, -26845.83);
+  assert.equal(a.mu, -0.3024);
+  assert.equal(a.indicator, 'VERY LOW');
+  const b = calc('JS', 'JS_TH', { specialPrice: 123975, discounts: [0], cost: 90567.25 });
+  assert.equal(b.mu, 0.2183);
+  assert.equal(b.indicator, 'LOW');
+  const c = calc('JS', 'JS_TH', { specialPrice: 242389, discounts: [0], cost: 177265.35 });
+  assert.equal(c.netExVat, 226531.78);
+  assert.equal(c.mu, 0.2175);
+});
+
+test('Joseph Space OVS landed cost (_Manual.Cal JS00032 / JS00027) and suggested price', () => {
+  const params = G.JS_OVS.params;
+  const a = landedCost({ factoryRmb: 30648.44 / 0.5, exchRate: 5.2, bpDisc: 0.44 }, params);
+  assert.equal(a.incoterm, 'FOB');
+  assert.equal(Math.round(a.cost * 100) / 100, 296935.22);
+  assert.equal(a.suggestedPrice, 742990);
+  const r = calc('JS_OVS', 'JS_OVS', { normalPrice: a.suggestedPrice, specialPrice: 742990, discounts: [0.3], cost: a.cost });
+  assert.equal(r.netIncVat, 520093);
+  assert.equal(r.netExVat, 486068.22);
+  assert.equal(r.gain, 189133.01);
+  assert.equal(r.mu, 0.3891);
+  assert.equal(r.indicator, 'OKAY');
+
+  const b = landedCost({ factoryRmb: 29853.47 / 0.5, exchRate: 5.2, bpDisc: 0.44 }, params);
+  assert.equal(Math.round(b.cost * 100) / 100, 289233.21);
+  assert.equal(b.suggestedPrice, 723990);
+
+  // Small orders are EXW (< 1500 USD in RMB) and pay 8% import tax.
+  const exw = landedCost({ factoryRmb: 5000, exchRate: 5.2, bpDisc: 0 }, params);
+  assert.equal(exw.incoterm, 'EXW');
+  assert.ok(exw.cost > landedCost({ factoryRmb: 5000, exchRate: 5.2, bpDisc: 0, incoterm: 'FOB' }, params).cost);
+});
+
+test('indicator rules: "below" is strict, "upTo" inclusive', () => {
+  const gt = G.GT.indicatorRules;
+  assert.equal(indicatorFor(0.1799, gt), 'ขาดทุน');
+  assert.equal(indicatorFor(0.18, gt), 'VERY LOW');
+  assert.equal(indicatorFor(0.2, gt), 'VERY LOW');
+  assert.equal(indicatorFor(0.2001, gt), 'LOW');
+  assert.equal(indicatorFor(0.25, gt), 'LOW');
+  assert.equal(indicatorFor(0.2501, gt), 'OKAY');
+  const js = G.JS.indicatorRules;
+  assert.equal(indicatorFor(0.1799, js), 'VERY LOW');
+  assert.equal(indicatorFor(0.18, js), 'LOW');
+  assert.equal(indicatorFor(0.23, js), 'OKAY');
+  const ovs = G.JS_OVS.indicatorRules;
+  assert.equal(indicatorFor(0.15, ovs), 'ขาดทุน');
+  assert.equal(indicatorFor(0.18, ovs), 'VERY LOW');
+  assert.equal(indicatorFor(0.23, ovs), 'LOW');
+  assert.equal(indicatorFor(null, gt), 'NO COST');
+});
+
+test('channel discount rules: OFFI minimum GP, BT fixed GP', () => {
+  assert.throws(() => resolveDiscounts(CH.OFFI_SHOPEE, [0.36]), /ห้ามต่ำกว่า 37%/);
+  assert.deepEqual(resolveDiscounts(CH.OFFI_SHOPEE, [0.4]), [0.4]);
+  assert.deepEqual(resolveDiscounts(CH.OFFI_SHOPEE, []), [0.37]);
+  assert.throws(() => resolveDiscounts(CH.OFFI_TIKTOK, [0.15]), /ห้ามต่ำกว่า 20%/);
+  assert.deepEqual(resolveDiscounts(CH.BT_EVE, [0]), [0.278304]);
+  assert.throws(() => resolveDiscounts(CH.GT_EVE, [0.18, 8, 0]), /ห้ามเกิน/);
+  assert.throws(() => resolveDiscounts(CH.GT_EVE, ['abc']), /ตัวเลข/);
+});
+
+test('ROUNDUP to thousands matches Excel', () => {
+  assert.equal(roundUpTo(742338.05, 3), 743000);
+  assert.equal(roundUpTo(743000, 3), 743000);
+});
+
+test('price-groups.json validation catches mistakes', () => {
+  const bad = { groups: [{ id: 'X', costSource: 'PRODUCT', indicatorRules: [{ indicator: 'LOW', upTo: 0.3 }, { indicator: 'VERY LOW', upTo: 0.2 }],
+    channels: [{ id: 'X1', formula: 'NOPE', idPrefix: 'X.', discounts: [{ label: 'GP', default: 0.1, min: 0.2 }] }] }] };
+  assert.throws(() => validatePriceGroups(bad), (e) => /ascending/.test(e.message) && /formula/.test(e.message) && /brand/.test(e.message) && /default outside/.test(e.message));
+});

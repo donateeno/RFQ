@@ -1,0 +1,16 @@
+# Use only when nothing else owns ports 80/443. Caddy gets the HTTPS certificate automatically.
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [app]
+    networks: [internal]
+
+volumes:
+  caddy_data:

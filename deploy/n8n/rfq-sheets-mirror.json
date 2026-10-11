@@ -1,0 +1,143 @@
+{
+  "name": "RFQ – mirror requests to Google Sheet",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "d7a1b47a-cf1c-56ac-bcc4-8ae3da53945a",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://rfq.example.com/api/integrations/requests",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "a696cff1-4038-51cb-b07c-767c346cea6d",
+      "name": "Get requests from app",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "RFQ integration token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_SPREADSHEET_ID_HERE/values/APP_Requests_Mirror!A:AZ:clear",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "9be5ac51-3bbd-5d32-837d-1cc2b1a8ea67",
+      "name": "Clear mirror tab",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_SPREADSHEET_ID_HERE/values/APP_Requests_Mirror!A1?valueInputOption=RAW",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: $('Get requests from app').item.json.values }) }}",
+        "options": {}
+      },
+      "id": "5e88f0f2-4fa7-5a4e-862a-0531ae2e4ef3",
+      "name": "Write mirror tab",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Get requests from app",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get requests from app": {
+      "main": [
+        [
+          {
+            "node": "Clear mirror tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear mirror tab": {
+      "main": [
+        [
+          {
+            "node": "Write mirror tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [],
+  "active": false,
+  "staticData": null,
+  "versionId": "c5c787e9-f688-4927-8ffd-8370307551a6",
+  "_comment": "Read-only copy of all requests in tab APP_Requests_Mirror (create the tab first). Share the sheet only with people allowed to see cost."
+}
