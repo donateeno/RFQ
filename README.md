@@ -21,7 +21,7 @@ Pick a **price group**, then a **channel**. Each channel carries its own formula
 | **GT** ร้านค้า/โครงการ | GT-EVE, GT-FOSTER | product master | special × (1−GP)(1−D2)(1−D3) | <18 ขาดทุน · ≤20 VERY LOW · ≤25 LOW |
 | **BT** บุญถาวร | BT-EVE, BT-FOSTER | product master | EVE: normal×(1−27.83%) − (normal−special) · FOSTER: special×(1−27.83%) | same as GT |
 | **OFFI** Online/Offline | Shopee, Lazada (GP ≥ 37%), TikTok, HomePro, LINE, Web, Showroom, Outlet (GP ≥ 20%) | product master | special × (1−GP) | same as GT |
-| **JS** Joseph Space | TH, Worktop | cost per project ID | special × (1−discount) | <18 VERY LOW · <23 LOW |
+| **JS** Joseph Space | TH, Worktop | cost per project ID | special × (1−discount) | <15 ขาดทุน · <18 VERY LOW · <23 LOW |
 | **JS_OVS** Joseph Space import | OVS | landed cost from factory RMB (freight, tax, markup, MKT fee, delivery, install, error) | special × (1−discount) | ≤15 ขาดทุน · ≤18 VERY LOW · ≤23 LOW |
 
 `%MU = (net ex VAT − cost) ÷ net ex VAT`. Cost and %MU are saved with each request. Every formula is tested against numbers taken from the source sheets ([`server/test/pricing.test.js`](server/test/pricing.test.js)).

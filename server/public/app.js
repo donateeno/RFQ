@@ -195,8 +195,8 @@
       S.lists = lists;
       $('#datalists').innerHTML = Object.keys(lists).map(function (k) { return '<datalist id="dl-' + esc(k) + '">' + lists[k].join('') + '</datalist>'; }).join('');
       $('#dl-customers').innerHTML = (b.customers || []).map(function (c) { return '<option value="' + esc(c) + '">'; }).join('');
-      $('#who').innerHTML = esc(b.user.name) + '<span class="role-chip">' + esc(b.user.role) + '</span><br><span>' + esc(b.user.email) +
-        '</span> · <button class="logout" id="logout">ออกจากระบบ</button>';
+      $('#who').innerHTML = esc(b.user.name) + '<span class="role-chip">' + esc(b.user.role) + '</span><br><span class="em">' + esc(b.user.email) + '</span>' +
+        ' <button class="logout" id="logout">ออกจากระบบ</button>';
       $('#logout').addEventListener('click', function () {
         fetch('/auth/logout', { method: 'POST', headers: { 'X-RFQ': '1' } }).then(function () { location.href = '/login'; });
       });
@@ -372,7 +372,7 @@
       '</div></div>' +
       '<div class="card" style="--disc-count:' + ch.discounts.length + '"><h2>รายการ</h2>' +
       '<div class="line-head"><span>' + esc(keyLabel(ch)) + '</span><span>จำนวน</span><span>ราคาพิเศษ (รวม VAT)</span>' +
-      ch.discounts.map(function (d) { return '<span>' + esc(d.label) + '</span>'; }).join('') + '<span>Indicator</span><span></span></div>' +
+      ch.discounts.map(function (d) { return '<span>' + esc(d.label) + '</span>'; }).join('') + '<span>Indicator</span></div>' +
       '<div id="nr-lines">' + c.lines.map(function (l, i) { return lineHtml(ch, l, i); }).join('') + '</div>' +
       '<div class="row" style="margin-top:12px"><button class="btn" id="nr-addline">+ เพิ่มรายการ</button><span class="spacer"></span>' +
       '<button class="btn ghost" id="nr-clear">ล้างทั้งหมด</button><button class="btn primary" id="nr-submit">ส่งขออนุมัติ</button></div></div>';
@@ -409,8 +409,8 @@
       '<div class="field"><span class="label">จำนวน</span><input type="text" inputmode="numeric" class="num" data-l-qty="' + i + '" value="' + esc(l.qty) + '"></div>' +
       '<div class="field"><span class="label">ราคาพิเศษ (รวม VAT)</span><input type="text" inputmode="decimal" class="num" data-l-special="' + i + '" value="' + esc(l.special) + '"></div>' +
       discs +
-      '<div class="ind-cell" id="li-' + i + '">' + lineInd(l) + '</div>' +
-      '<div><button class="icon-btn" data-l-del="' + i + '" title="ลบรายการ">✕</button></div></div>';
+      '<div class="line-end"><div class="ind-cell" id="li-' + i + '">' + lineInd(l) + '</div>' +
+      '<button class="icon-btn" data-l-del="' + i + '" title="ลบรายการ">✕</button></div></div>';
   }
   function npText(ch, l) {
     var p = item(ch.id, l.productKey);
@@ -530,7 +530,7 @@
     $('#mine-list').innerHTML = (hasPending ? '<div class="row end" style="margin-bottom:8px"><button class="btn small bad" id="mine-cancel" disabled>ยกเลิกรายการที่เลือก</button></div>' : '') +
       '<div class="table-wrap"><table class="cards"><thead><tr><th></th><th>Req. Id.</th><th>วันที่ขอ</th><th>คู่ค้า / โครงการ</th><th>รายการ</th><th class="num">จำนวน</th><th class="num">ราคาพิเศษ</th><th>ส่วนลด</th><th>Indicator</th><th>สถานะ</th><th>ใช้ได้ถึง</th><th>หมายเหตุผู้อนุมัติ</th></tr></thead><tbody>' +
       list.map(function (r) {
-        return '<tr><td data-label="">' + (r.status === 'Pending' ? '<input type="checkbox" data-cancel="' + esc(r.id) + '">' : '') + '</td>' +
+        return '<tr><td data-label="' + (r.status === 'Pending' ? 'เลือก' : '') + '">' + (r.status === 'Pending' ? '<input type="checkbox" data-cancel="' + esc(r.id) + '">' : '') + '</td>' +
           '<td data-label="Req. Id." class="nowrap"><b>' + esc(r.id) + '</b><div class="muted">' + esc(channelName(r.channel)) + '</div></td>' +
           '<td data-label="วันที่ขอ" class="nowrap">' + dateTh(r.requestedAt) + '</td>' +
           '<td data-label="คู่ค้า">' + esc(r.customer) + (r.project ? '<div class="muted">' + esc(r.project) + '</div>' : '') + '</td>' +
@@ -633,7 +633,7 @@
         '<div class="table-wrap"><table class="cards"><thead><tr><th></th><th>Req. Id.</th><th>รายการ</th><th class="num">จำนวน</th><th class="num">ขายปกติ</th><th class="num">ราคาพิเศษ</th><th>ส่วนลด</th><th class="num">สุทธิ ex VAT</th>' +
         (canSeeCost() ? '<th class="num">ต้นทุน</th><th class="num">Gain</th>' : '') + '<th class="num">' + muHead() + '</th><th>Indicator</th><th></th></tr></thead><tbody>' +
         g.rows.map(function (r) {
-          return '<tr data-row="' + esc(r.id) + '"><td data-label="">' + (own ? '' : '<input type="checkbox" data-sel="' + esc(r.id) + '" data-g="' + esc(g.key) + '">') + '</td>' +
+          return '<tr data-row="' + esc(r.id) + '"><td data-label="' + (own ? '' : 'เลือก') + '">' + (own ? '' : '<input type="checkbox" data-sel="' + esc(r.id) + '" data-g="' + esc(g.key) + '">') + '</td>' +
             '<td data-label="Req. Id." class="nowrap"><b>' + esc(r.id) + '</b></td>' +
             '<td data-label="รายการ">' + esc(r.productName) + (r.isBundle ? '<span class="tag new">ชุดเซ็ต</span>' : '') +
               (r.productName !== r.productKey ? '<div class="muted">' + esc(r.productKey) + '</div>' : '') + flagsHtml(r.flags) + repricedHtml(r) + '</td>' +
@@ -1053,20 +1053,20 @@
       }).join('') + '</div><div class="row end" style="margin-top:12px"><button class="btn primary" id="adm-save">บันทึก</button></div></div></div>' +
 
       '<div class="card stack-gap"><h2>รอบราคา (Price list)</h2><p class="hint">ราคาตั้งปรับทุกรอบ (~4 เดือน) — นำเข้ารอบใหม่ล่วงหน้าได้ ระบบสลับให้อัตโนมัติเมื่อถึงวันมีผล ราคาพิเศษที่อนุมัติแล้วใช้ได้จนวันสิ้นสุดเดิม คำขอที่ยังรออนุมัติจะถูกคิดใหม่ด้วยราคารอบใหม่</p>' +
-      '<div class="table-wrap"><table><thead><tr><th>รอบ</th><th>มีผลตั้งแต่</th><th>แบรนด์ / สถานะ</th><th class="num">คำขอ</th><th>หมายเหตุ</th><th></th></tr></thead><tbody>' +
+      '<div class="table-wrap"><table class="cards"><thead><tr><th>รอบ</th><th>มีผลตั้งแต่</th><th>แบรนด์ / สถานะ</th><th class="num">คำขอ</th><th>หมายเหตุ</th><th></th></tr></thead><tbody>' +
       a.priceLists.map(function (l) {
         var st = { current: '<span class="tag new">ใช้อยู่</span>', upcoming: '<span class="tag up">รอบหน้า</span>', past: '<span class="tag old">เก่า</span>' };
-        return '<tr><td><b>' + esc(l.name) + '</b></td><td class="nowrap"><input type="date" data-pl-eff="' + l.id + '" value="' + esc(l.effectiveFrom) + '" style="width:auto;min-height:32px;padding:4px 8px"></td>' +
-          '<td>' + (l.brands.length ? l.brands.map(function (b) { return esc(b.brand) + ' ' + b.products + ' รายการ ' + st[b.status]; }).join('<br>') : '<span class="muted">ไม่มีสินค้า</span>') + '</td>' +
-          '<td class="num">' + l.requests + '</td><td class="muted">' + esc(l.note) + '</td>' +
-          '<td><div class="row"><button class="btn small ghost" data-pl-save="' + l.id + '">บันทึกวันที่</button>' +
+        return '<tr><td data-label="รอบ"><b>' + esc(l.name) + '</b></td><td data-label="มีผลตั้งแต่" class="nowrap"><input type="date" data-pl-eff="' + l.id + '" value="' + esc(l.effectiveFrom) + '" style="width:auto;min-height:32px;padding:4px 8px"></td>' +
+          '<td data-label="แบรนด์">' + (l.brands.length ? l.brands.map(function (b) { return esc(b.brand) + ' ' + b.products + ' รายการ ' + st[b.status]; }).join('<br>') : '<span class="muted">ไม่มีสินค้า</span>') + '</td>' +
+          '<td data-label="คำขอ" class="num">' + l.requests + '</td><td data-label="หมายเหตุ" class="muted">' + esc(l.note) + '</td>' +
+          '<td data-label=""><div class="row"><button class="btn small ghost" data-pl-save="' + l.id + '">บันทึกวันที่</button>' +
           (l.effectiveFrom > S.boot.today && !l.requests ? '<button class="btn small bad" data-pl-del="' + l.id + '">ลบ</button>' : '') + '</div></td></tr>';
       }).join('') + '</tbody></table></div></div>' +
       '<div class="card stack-gap"><h2>ผู้ใช้และสิทธิ์</h2><p class="hint">ทุกคนที่ใช้อีเมลบริษัทเข้าใช้ได้ในฐานะ SALES อัตโนมัติ เพิ่มที่นี่เพื่อกำหนดเป็น SUPERVISOR / ADMIN หรือปิดบัญชี · สิทธิ์ดูต้นทุนกำหนดได้เฉพาะที่เซิร์ฟเวอร์ (COST_VIEWERS) ไม่สามารถให้สิทธิ์จากหน้านี้</p>' +
-      '<div class="table-wrap"><table><thead><tr><th>อีเมล</th><th>ชื่อ</th><th>Role</th><th>ดูต้นทุน</th><th>ใช้งาน</th><th>เข้าใช้ล่าสุด</th><th></th></tr></thead><tbody>' +
+      '<div class="table-wrap"><table class="cards"><thead><tr><th>อีเมล</th><th>ชื่อ</th><th>Role</th><th>ดูต้นทุน</th><th>ใช้งาน</th><th>เข้าใช้ล่าสุด</th><th></th></tr></thead><tbody>' +
       a.users.map(function (u) {
-        return '<tr><td>' + esc(u.email) + '</td><td>' + esc(u.name) + '</td><td>' + esc(u.role) + '</td><td>' + (u.canViewCost ? '🔒 ✓' : '–') + '</td><td>' + (u.active ? '✓' : '–') + '</td><td class="nowrap">' + (u.lastLoginAt ? dateTh(u.lastLoginAt) : '–') + '</td>' +
-          '<td><button class="btn small ghost" data-edit-user="' + esc(u.email) + '">แก้ไข</button></td></tr>';
+        return '<tr><td data-label="อีเมล">' + esc(u.email) + '</td><td data-label="ชื่อ">' + esc(u.name) + '</td><td data-label="Role">' + esc(u.role) + '</td><td data-label="ดูต้นทุน">' + (u.canViewCost ? '🔒 ✓' : '–') + '</td><td data-label="ใช้งาน">' + (u.active ? '✓' : '–') + '</td><td data-label="เข้าใช้ล่าสุด" class="nowrap">' + (u.lastLoginAt ? dateTh(u.lastLoginAt) : '–') + '</td>' +
+          '<td data-label=""><button class="btn small ghost" data-edit-user="' + esc(u.email) + '">แก้ไข</button></td></tr>';
       }).join('') + '</tbody></table></div>' +
       '<div class="user-form"><div class="field"><label>อีเมล</label><input type="text" id="u-email" placeholder="name@eve.co.th"></div>' +
       '<div class="field"><label>ชื่อ</label><input type="text" id="u-name"></div>' +
@@ -1077,15 +1077,15 @@
       '<div class="card stack-gap"><h2>กลุ่มราคาและช่องทาง</h2><p class="hint">อ่านอย่างเดียว — แก้ไขที่ server/config/price-groups.json แล้วเปิด Pull Request (AI ตรวจโค้ด → คุณอนุมัติ → deploy อัตโนมัติ)</p>' +
       a.catalog.map(function (g) {
         return '<h3 style="margin:14px 0 4px">' + esc(g.name) + ' <span class="group-chip">' + esc(g.costSource) + '</span></h3><div class="rules">' + rulesText(g.indicatorRules) + '</div>' +
-          '<div class="table-wrap" style="margin-top:6px"><table><thead><tr><th>ช่องทาง</th><th>Prefix</th><th>สูตร</th><th>ส่วนลด (default / min–max)</th></tr></thead><tbody>' +
+          '<div class="table-wrap" style="margin-top:6px"><table class="cards"><thead><tr><th>ช่องทาง</th><th>Prefix</th><th>สูตร</th><th>ส่วนลด (default / min–max)</th></tr></thead><tbody>' +
           g.channels.map(function (ch) {
-            return '<tr><td>' + esc(ch.name) + '<div class="muted">' + esc(ch.id) + '</div></td><td>' + esc(ch.idPrefix) + '</td><td>' + esc(ch.formula) + '</td><td>' +
+            return '<tr><td data-label="ช่องทาง">' + esc(ch.name) + '<div class="muted">' + esc(ch.id) + '</div></td><td data-label="Prefix">' + esc(ch.idPrefix) + '</td><td data-label="สูตร">' + esc(ch.formula) + '</td><td data-label="ส่วนลด">' +
               ch.discounts.map(function (d) { return esc(d.label) + ' ' + pct(d.default, 1) + (d.editable ? ' (' + pct(d.min || 0, 0) + '–' + pct(d.max === undefined ? 0.99 : d.max, 0) + ')' : ' 🔒'); }).join('<br>') + '</td></tr>';
           }).join('') + '</tbody></table></div>';
       }).join('') + '</div>' +
 
-      '<div class="card stack-gap"><h2>บันทึกการใช้งานล่าสุด</h2><div class="table-wrap"><table><thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>การกระทำ</th><th>Req. Id.</th><th>รายละเอียด</th></tr></thead><tbody>' +
-      a.recentLog.map(function (l) { return '<tr><td class="nowrap">' + esc(l.at.replace('T', ' ').slice(0, 16)) + '</td><td>' + esc(l.user) + '</td><td>' + esc(l.action) + '</td><td>' + esc(l.ids) + '</td><td class="muted">' + esc(l.detail.slice(0, 160)) + '</td></tr>'; }).join('') +
+      '<div class="card stack-gap"><h2>บันทึกการใช้งานล่าสุด</h2><div class="table-wrap"><table class="cards"><thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>การกระทำ</th><th>Req. Id.</th><th>รายละเอียด</th></tr></thead><tbody>' +
+      a.recentLog.map(function (l) { return '<tr><td data-label="เวลา" class="nowrap">' + esc(l.at.replace('T', ' ').slice(0, 16)) + '</td><td data-label="ผู้ใช้">' + esc(l.user) + '</td><td data-label="การกระทำ">' + esc(l.action) + '</td><td data-label="Req. Id.">' + esc(l.ids) + '</td><td data-label="รายละเอียด" class="muted">' + esc(l.detail.slice(0, 160)) + '</td></tr>'; }).join('') +
       '</tbody></table></div></div>';
 
     var syncImp = function () {

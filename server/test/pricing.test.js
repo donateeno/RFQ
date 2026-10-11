@@ -52,12 +52,12 @@ test('OFFI (RFQ PriceGroup DGT.OFFI _CalEngine, OFFI.0001/0002): GP 27% → 36.1
   assert.equal(r2.indicator, 'LOW');
 });
 
-test('Joseph Space TH (_Cal.TH): project cost vs special price; JS rules have no ขาดทุน level', () => {
+test('Joseph Space TH (_Cal.TH): project cost vs special price; below 15% = ขาดทุน (owner rule, Oct 2026)', () => {
   const a = calc('JS', 'JS_TH', { specialPrice: 95000, discounts: [0], cost: 115630.88 });
   assert.equal(a.netExVat, 88785.05);
   assert.equal(a.gain, -26845.83);
   assert.equal(a.mu, -0.3024);
-  assert.equal(a.indicator, 'VERY LOW');
+  assert.equal(a.indicator, 'ขาดทุน', 'the sheet said VERY LOW; owner set < 15% = ขาดทุน');
   const b = calc('JS', 'JS_TH', { specialPrice: 123975, discounts: [0], cost: 90567.25 });
   assert.equal(b.mu, 0.2183);
   assert.equal(b.indicator, 'LOW');
@@ -98,6 +98,8 @@ test('indicator rules: "below" is strict, "upTo" inclusive', () => {
   assert.equal(indicatorFor(0.25, gt), 'LOW');
   assert.equal(indicatorFor(0.2501, gt), 'OKAY');
   const js = G.JS.indicatorRules;
+  assert.equal(indicatorFor(0.1499, js), 'ขาดทุน');
+  assert.equal(indicatorFor(0.15, js), 'VERY LOW');
   assert.equal(indicatorFor(0.1799, js), 'VERY LOW');
   assert.equal(indicatorFor(0.18, js), 'LOW');
   assert.equal(indicatorFor(0.23, js), 'OKAY');

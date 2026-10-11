@@ -110,6 +110,7 @@
       "description": "Joseph Space — ครัว/ตู้/หินสั่งทำ คิดต้นทุนรายโครงการ (เดิม: RFQ JOSEPH SPACE)",
       "costSource": "PROJECT",
       "indicatorRules": [
+        { "indicator": "ขาดทุน", "below": 0.15 },
         { "indicator": "VERY LOW", "below": 0.18 },
         { "indicator": "LOW", "below": 0.23 }
       ],
