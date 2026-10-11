@@ -69,38 +69,52 @@ test('bootstrap: groups/channels for everyone, never cost; approver extras only 
   assert.equal(b.groups[0].indicatorRules, undefined);
   const json = JSON.stringify(b);
   assert.ok(!json.includes('7100') && !json.includes('177265') && !json.includes('61296'), 'no cost values leak to sales');
-  assert.ok(b.products.every((p) => Object.keys(p).sort().join() === 'b,k,n,p'));
+  assert.ok(b.products.every((p) => Object.keys(p).every((k) => ['b', 'k', 'n', 'p', 'nw', 'up', 'ux'].includes(k))));
+  assert.ok(b.bundles.some((x) => x.k === 'HC-DEMO-90 + FAUCET-DEMO' && x.p === 22980), 'legacy _CalDummy row became a bundle');
+  assert.equal(b.user.canSeeCost, false);
   assert.ok(b.projects.some((p) => p.k === '3FO3QG6B0RQ1_01'));
   assert.equal(b.landed[0].p, 742990, 'OVS suggested price is shown like in the sheet');
   const s = await sup.call('getBootstrap');
   assert.equal(s.user.role, 'SUPERVISOR');
-  assert.ok(Array.isArray(s.groups[0].indicatorRules));
+  assert.equal(s.user.canSeeCost, false);
+  assert.ok(!JSON.stringify(s).includes('7100'));
+  assert.equal((await admin.call('getBootstrap')).user.canSeeCost, true);
 });
 
 // ------------------------------------------------------------- price check
 
-test('priceCheck: sales get the indicator only, approvers get the numbers', async () => {
+test('priceCheck: sales = indicator; supervisor = net + MU band, never cost; only the cost viewer sees cost', async () => {
   const p = { channelId: 'GT_EVE', productKey: ' hc-demo-90 ', specialPrice: 16990, discounts: [0.18, 0, 0] };
   const s = await sales.call('priceCheck', p);
   assert.equal(s.indicator, 'OKAY');
   assert.equal(s.productKey, 'HC-DEMO-90');
   assert.equal(s.normalPrice, 18990, 'GT hot price wins over the master price');
-  for (const k of ['cost', 'gain', 'mu', 'netExVat', 'netIncVat']) assert.ok(!(k in s), k + ' leaked');
-  const a = await sup.call('priceCheck', p);
+  assert.equal(s.priceList.name, 'APR26');
+  for (const k of ['cost', 'gain', 'mu', 'muBand', 'netExVat', 'netIncVat']) assert.ok(!(k in s), k + ' leaked');
+  const v = await sup.call('priceCheck', p);
+  for (const k of ['cost', 'gain', 'mu']) assert.ok(!(k in v), k + ' leaked to supervisor');
+  assert.equal(v.muBand, '> 25%');
+  assert.equal(v.netExVat, 13020.37);
+  const admin2 = await env.client('admin2@eve.co.th').login();
+  const v2 = await admin2.call('priceCheck', p);
+  assert.ok(!('cost' in v2), 'another ADMIN without COST_VIEWERS does not see cost');
+  const a = await admin.call('priceCheck', p);
   assert.equal(a.cost, 7100);
   assert.equal(a.mu, Math.round((16990 * 0.82 / 1.07 - 7100) / (16990 * 0.82 / 1.07) * 10000) / 10000);
 });
 
 test('priceCheck covers every cost source: product, dummy set, project, landed', async () => {
-  const set = await sup.call('priceCheck', { channelId: 'GT_EVE', productKey: 'HC-DEMO-90 + FAUCET-DEMO', specialPrice: 20000, discounts: [0.18, 0, 0] });
-  assert.equal(set.cost, 8500);
-  const foster = await sup.call('priceCheck', { channelId: 'BT_FOSTER', productKey: '2451090', specialPrice: 120000, discounts: [] });
+  const set = await admin.call('priceCheck', { channelId: 'GT_EVE', productKey: 'HC-DEMO-90 + FAUCET-DEMO', specialPrice: 20000, discounts: [0.18, 0, 0] });
+  assert.equal(set.cost, 8600, 'bundle cost = sum of component costs in the current price list');
+  assert.equal(set.normalPrice, 22980);
+  assert.equal(set.isBundle, true);
+  const foster = await admin.call('priceCheck', { channelId: 'BT_FOSTER', productKey: '2451090', specialPrice: 120000, discounts: [] });
   assert.equal(foster.productName, 'GHOST HOOD 90 cm');
   assert.deepEqual(foster.discounts, [0.278304]);
-  const proj = await sup.call('priceCheck', { channelId: 'JS_TH', productKey: '3fo3qg6b0rq1_01', specialPrice: 242389, discounts: [0] });
+  const proj = await admin.call('priceCheck', { channelId: 'JS_TH', productKey: '3fo3qg6b0rq1_01', specialPrice: 242389, discounts: [0] });
   assert.equal(proj.mu, 0.2175);
   assert.equal(proj.indicator, 'LOW');
-  const ovs = await sup.call('priceCheck', { channelId: 'JS_OVS', productKey: 'JS00032', specialPrice: 742990, discounts: [0.3] });
+  const ovs = await admin.call('priceCheck', { channelId: 'JS_OVS', productKey: 'JS00032', specialPrice: 742990, discounts: [0.3] });
   assert.equal(ovs.normalPrice, 742990);
   assert.equal(ovs.mu, 0.3891);
   assert.equal(ovs.indicator, 'OKAY');
@@ -132,8 +146,10 @@ test('submit: per-prefix numbering, cost snapshot, notification without leaking 
   assert.deepEqual(row.discount_labels, ['ส่วนลด GP', 'ส่วนลด 2', 'ส่วนลด 3']);
   const mail = env.mail.slice(before);
   assert.equal(mail.length, 1);
-  assert.deepEqual(mail[0].to.sort(), [ADMIN, SUP]);
+  assert.deepEqual(mail[0].to.sort(), ['admin2@eve.co.th', ADMIN, SUP]);
   assert.match(mail[0].html, /GT\.0001/);
+  assert.match(mail[0].html, /ช่วง MU/);
+  assert.ok(!/7,100|%MU/.test(mail[0].html), 'approver email has no cost or exact %MU');
   assert.match(mail[0].html, /rfq\.example\.com\/#approvals/);
 
   // OFFI channels share the OFFI. prefix
@@ -196,7 +212,8 @@ test('lists and search', async () => {
   await assert.rejects(sales.call('listRequests', {}), /ไม่มีสิทธิ์/);
   const offi = await sup.call('listRequests', { group: 'OFFI' });
   assert.deepEqual(offi.map((r) => r.id).sort(), ['OFFI.0001', 'OFFI.0002']);
-  assert.ok('mu' in offi[0]);
+  assert.ok(!('mu' in offi[0]) && !('cost' in offi[0]) && offi[0].muBand, 'supervisor list: band only');
+  assert.ok('mu' in (await admin.call('listRequests', { group: 'OFFI' }))[0]);
   const q = await sup.call('listRequests', { q: "hc-demo ร้านทดสอบ" });
   assert.ok(q.length && q.every((r) => r.productKey === 'HC-DEMO-90'));
   const injection = await sup.call('listRequests', { q: "%' or 1=1 --" });
@@ -212,6 +229,9 @@ test('lists and search', async () => {
 test('dashboard', async () => {
   await assert.rejects(sales.call('getDashboard', {}), /ไม่มีสิทธิ์/);
   const d = await sup.call('getDashboard', {});
+  assert.equal(d.showMu, false);
+  assert.equal(d.kpis.avgMuApproved, null, 'supervisor dashboard has no average %MU');
+  assert.equal((await admin.call('getDashboard', {})).showMu, true);
   assert.equal(d.byIndicator.reduce((a, x) => a + x.total, 0), d.kpis.total);
   assert.equal(d.byMonth.length, 6);
   assert.ok(d.byChannel.some((c) => c.channel === 'OFFI_SHOPEE' && c.group === 'Official Online / Offline'));
@@ -238,7 +258,8 @@ test('admin: settings, users, CSV imports are admin-only', async () => {
   await admin.call('saveUser', { email: SALES2, role: 'SALES', active: true });
 
   await assert.rejects(sup.call('importCsv', { type: 'products', csv: 'brand,key\nEVE,X' }), /ไม่มีสิทธิ์/);
-  const r = await admin.call('importCsv', { type: 'products', brand: 'FOSTER', csv: 'key,name,cost,normal_price\n"9999,1","Odd, name",100,"1,000.00"\n' });
+  await assert.rejects(admin.call('importCsv', { type: 'products', brand: 'FOSTER', csv: 'key,cost\nX,1\n' }), /ชื่อรอบราคา/);
+  const r = await admin.call('importCsv', { type: 'products', brand: 'FOSTER', priceList: { name: 'APR26' }, csv: 'key,name,cost,normal_price\n"9999,1","Odd, name",100,"1,000.00"\n' });
   assert.equal(r.imported, 1);
   const p = (await env.db.query(`select * from products where brand = 'FOSTER' and key = '9999,1'`)).rows[0];
   assert.equal(p.name, 'Odd, name');

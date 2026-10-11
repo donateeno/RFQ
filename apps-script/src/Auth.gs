@@ -23,6 +23,8 @@ function currentUser_() {
   });
   user.canApprove = user.role === ROLE.SUPERVISOR || user.role === ROLE.ADMIN;
   user.isAdmin = user.role === ROLE.ADMIN;
+  // Cost, gain and %MU are visible to admins only (supervisors approve on the indicator).
+  user.canSeeCost = user.isAdmin;
   userMemo_ = user;
   return user;
 }

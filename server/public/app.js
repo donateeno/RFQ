@@ -92,6 +92,24 @@
     return f.split(';').map(function (x) { x = x.trim(); return x ? '<span class="flag' + (x.indexOf('นำเข้า') === 0 ? '' : ' warn') + '">' + esc(x) + '</span>' : ''; }).join('');
   }
   function canApprove() { return S.boot && S.boot.user.canApprove; }
+  function canSeeCost() { return S.boot && S.boot.user.canSeeCost; }
+  /** % MU cell: exact for the cost viewer, the band for supervisors */
+  function muCell(r) { return canSeeCost() ? '<b>' + pct(r.mu) + '</b>' : '<span class="band">' + esc(r.muBand || '–') + '</span>'; }
+  function muHead() { return canSeeCost() ? '%MU' : 'ช่วง MU'; }
+  function itemTags(it) {
+    if (!it) return '';
+    return (it.nw ? '<span class="tag new">ใหม่</span>' : '') + (it.bundle ? '<span class="tag new">ชุดเซ็ต</span>' : '') +
+      (it.up ? '<span class="tag up">ราคาใหม่ ' + money(it.up) + '</span>' : '') + (it.ux ? '<span class="tag up">เลิกขายรอบหน้า</span>' : '');
+  }
+  function priceListBanner() {
+    var pl = S.boot.priceLists || {};
+    var up = Object.keys(pl).filter(function (b) { return pl[b].upcoming; }).map(function (b) {
+      return esc(b) + ': รอบ <b>' + esc(pl[b].upcoming.name) + '</b> มีผล ' + dateTh(pl[b].upcoming.effectiveFrom);
+    });
+    var cur = Object.keys(pl).filter(function (b) { return pl[b].current; }).map(function (b) { return esc(b) + ' ' + esc(pl[b].current.name); });
+    return (up.length ? '<div class="banner">ราคาตั้งรอบใหม่กำลังจะมีผล — ' + up.join(' · ') + ' · รายการที่ราคาเปลี่ยนจะมีป้าย <span class="tag up">ราคาใหม่</span></div>' : '') +
+      (cur.length ? '<p class="hint" style="margin:-8px 0 12px">รอบราคาปัจจุบัน: ' + cur.join(' · ') + '</p>' : '');
+  }
 
   // ----- catalog
   function channel(id) { return S.chIndex[id] && S.chIndex[id].channel; }
@@ -122,7 +140,8 @@
       { id: 'check', label: 'ตรวจราคา' },
       { id: 'new', label: 'ขออนุมัติราคา' },
       { id: 'mine', label: 'คำขอของฉัน' },
-      { id: 'approved', label: 'ราคาที่อนุมัติแล้ว' }
+      { id: 'approved', label: 'ราคาที่อนุมัติแล้ว' },
+      { id: 'bundles', label: 'ชุดเซ็ต' }
     ];
     if (canApprove()) {
       r.push({ sep: true });
@@ -153,7 +172,7 @@
     renderNav();
     $('#actionbar').classList.remove('show');
     window.scrollTo(0, 0);
-    ({ check: viewCheck, 'new': viewNew, mine: viewMine, approved: viewApproved,
+    ({ check: viewCheck, 'new': viewNew, mine: viewMine, approved: viewApproved, bundles: viewBundles,
       approvals: viewApprovals, monitor: viewMonitor, dashboard: viewDashboard, admin: viewAdmin })[route]();
   }
 
@@ -162,13 +181,18 @@
       S.boot = b;
       b.groups.forEach(function (g) { g.channels.forEach(function (c) { S.chIndex[c.id] = { group: g, channel: c }; }); });
       var lists = {};
-      function add(set, k, n, p) {
-        (S.items[set] = S.items[set] || {})[String(k).toUpperCase()] = { k: k, n: n || k, p: p };
-        (lists[set] = lists[set] || []).push('<option value="' + esc(k) + '">' + (n && n !== k ? esc(n) + ' · ' : '') + (p ? money(p) + ' ฿' : '') + '</option>');
+      function add(set, k, n, p, extra) {
+        var e = { k: k, n: n || k, p: p };
+        if (extra) Object.keys(extra).forEach(function (x) { e[x] = extra[x]; });
+        (S.items[set] = S.items[set] || {})[String(k).toUpperCase()] = e;
+        var tags = (e.nw ? ' · ใหม่' : '') + (e.bundle ? ' · ชุดเซ็ต' : '') + (e.up ? ' · ราคาใหม่ ' + money(e.up) : '') + (e.ux ? ' · เลิกขายรอบหน้า' : '');
+        (lists[set] = lists[set] || []).push('<option value="' + esc(k) + '">' + (n && n !== k ? esc(n) + ' · ' : '') + (p ? money(p) + ' ฿' : '') + esc(tags) + '</option>');
       }
-      b.products.forEach(function (p) { add('P-' + p.b, p.k, p.n, p.p); });
+      b.products.forEach(function (p) { add('P-' + p.b, p.k, p.n, p.p, { nw: p.nw, up: p.up, ux: p.ux }); });
+      b.bundles.forEach(function (x) { add('P-' + x.b, x.k, x.n, x.p, { bundle: true }); });
       b.projects.forEach(function (p) { add('J-' + p.g, p.k, p.n, p.p); });
       b.landed.forEach(function (p) { add('L-' + p.g, p.k, p.n, p.p); });
+      S.lists = lists;
       $('#datalists').innerHTML = Object.keys(lists).map(function (k) { return '<datalist id="dl-' + esc(k) + '">' + lists[k].join('') + '</datalist>'; }).join('');
       $('#dl-customers').innerHTML = (b.customers || []).map(function (c) { return '<option value="' + esc(c) + '">'; }).join('');
       $('#who').innerHTML = esc(b.user.name) + '<span class="role-chip">' + esc(b.user.role) + '</span><br><span>' + esc(b.user.email) +
@@ -212,7 +236,7 @@
     return ch.discounts.map(function (d, i) {
       var hint = d.editable ? (d.min ? 'ขั้นต่ำ ' + pctInput(d.min) + '%' : '') : 'กำหนดโดยช่องทาง';
       return '<div class="field"><label>' + esc(d.label) + '</label><div class="pct-wrap"><input type="text" inputmode="decimal" class="num" data-' + prefix + '-disc="' + i + '" value="' + esc(values[i]) + '"' + (d.editable ? '' : ' disabled') + '></div>' +
-        (hint ? '<span class="hint">' + esc(hint) + '</span>' : '') + '</div>';
+        '<span class="hint">' + esc(hint) + '</span></div>';
     }).join('');
   }
 
@@ -225,11 +249,11 @@
       S.pc = { channelId: c0.id, productKey: '', special: '', discs: defaultDiscs(c0), result: null, busy: false };
     }
     var ch = channel(S.pc.channelId);
-    $('#view').innerHTML = page('ตรวจราคา', 'ใส่ราคาที่จะเสนอลูกค้า ระบบจะบอกทันทีว่าราคานี้อยู่ในเกณฑ์หรือไม่ (ยังไม่บันทึก)') +
+    $('#view').innerHTML = page('ตรวจราคา', 'ใส่ราคาที่จะเสนอลูกค้า ระบบจะบอกทันทีว่าราคานี้อยู่ในเกณฑ์หรือไม่ (ยังไม่บันทึก)') + priceListBanner() +
       '<div class="grid-2"><div class="card">' + pickerHtml('pc-pick', ch.id) +
-      '<div class="fields">' +
-      '<div class="field wide"><label for="pc-prod">' + esc(keyLabel(ch)) + '</label><input type="search" id="pc-prod" list="dl-' + esc(itemSet(ch.id)) + '" autocomplete="off" placeholder="พิมพ์เพื่อค้นหา…" value="' + esc(S.pc.productKey) + '"><div class="hint" id="pc-prod-info"></div></div>' +
-      '<div class="field"><label for="pc-special">ราคาขายพิเศษสุทธิ (รวม VAT)</label><input type="text" inputmode="decimal" class="num" id="pc-special" value="' + esc(S.pc.special) + '" placeholder="0"></div>' +
+      '<div class="field"><label for="pc-prod">' + esc(keyLabel(ch)) + '</label><input type="search" id="pc-prod" list="dl-' + esc(itemSet(ch.id)) + '" autocomplete="off" placeholder="พิมพ์เพื่อค้นหา…" value="' + esc(S.pc.productKey) + '"><div class="hint" id="pc-prod-info"></div></div>' +
+      '<div class="fields prices" style="--n:' + (ch.discounts.length + 1) + '">' +
+      '<div class="field"><label for="pc-special">ราคาพิเศษสุทธิ (รวม VAT)</label><input type="text" inputmode="decimal" class="num" id="pc-special" value="' + esc(S.pc.special) + '" placeholder="0"><span class="hint"></span></div>' +
       discountInputs(ch, S.pc.discs, 'pc') +
       '</div>' +
       '<div class="row end" style="margin-top:16px"><button class="btn primary" id="pc-add">+ ใช้ราคานี้ขออนุมัติ</button></div>' +
@@ -261,8 +285,8 @@
     function prodInfo() {
       var p = item(ch.id, S.pc.productKey);
       $('#pc-prod-info').innerHTML = p
-        ? (p.n !== p.k ? esc(p.n) + ' · ' : '') + (p.p ? normalLabel(ch.id) + ' <b>' + money(p.p) + '</b> ฿' : '')
-        : (S.pc.productKey ? '<span style="color:var(--danger)">ไม่พบในรายการ</span>' : '');
+        ? (p.n !== p.k ? esc(p.n) + ' · ' : '') + (p.p ? normalLabel(ch.id) + ' <b>' + money(p.p) + '</b> ฿' : '') + itemTags(p)
+        : (S.pc.productKey ? '<span style="color:var(--danger)">ไม่พบในรายการราคาปัจจุบัน</span>' : '');
     }
   }
 
@@ -304,14 +328,16 @@
       '<div class="big"><span class="dot">' + i.icon + '</span>' + esc(r.indicator) + (S.pc.busy ? ' <span class="spin"></span>' : '') + '</div>' +
       '<div class="msg">' + esc(i.msg) + '</div>' +
       (r.normalPrice ? '<div class="msg">ราคา' + normalLabel(S.pc.channelId) + ' ' + money(r.normalPrice) + ' ฿ · ' + offerVsNormal(r.normalPrice) + '</div>' : '') +
+      (r.priceList ? '<div class="msg hint">ราคารอบ ' + esc(r.priceList.name) + (r.isNew ? ' <span class="tag new">สินค้าใหม่</span>' : '') + '</div>' : '') +
+      (r.upcoming ? '<div class="msg"><span class="tag up">รอบ ' + esc(r.upcoming.name) + ' มีผล ' + dateTh(r.upcoming.effectiveFrom) + '</span> ' +
+        (r.upcoming.discontinued ? 'ไม่มีสินค้านี้ในรอบใหม่' : 'ราคา' + normalLabel(S.pc.channelId) + 'ใหม่ ' + money(r.upcoming.normalPrice) + ' ฿') + '</div>' : '') +
       (r.flags && r.flags.length ? '<div>' + r.flags.map(function (f) { return '<span class="flag warn">' + esc(f) + '</span>'; }).join('') + '</div>' : '') +
       '</div>';
-    if (canApprove() && r.cost !== undefined) {
-      html += '<dl class="kv"><dt>ต้นทุน / หน่วย</dt><dd>' + money(r.cost, 2) + '</dd>' +
-        '<dt>สุทธิหลังส่วนลด (รวม VAT)</dt><dd>' + money(r.netIncVat, 2) + '</dd>' +
+    if (canApprove() && r.netExVat !== undefined) {
+      html += '<dl class="kv"><dt>สุทธิหลังส่วนลด (รวม VAT)</dt><dd>' + money(r.netIncVat, 2) + '</dd>' +
         '<dt>สุทธิ (ไม่รวม VAT)</dt><dd>' + money(r.netExVat, 2) + '</dd>' +
-        '<dt>กำไร (Gain)</dt><dd>' + money(r.gain, 2) + '</dd>' +
-        '<dt>%MU</dt><dd>' + pct(r.mu) + '</dd></dl>';
+        (canSeeCost() ? '<dt>ต้นทุน / หน่วย</dt><dd>' + money(r.cost, 2) + '</dd><dt>กำไร (Gain)</dt><dd>' + money(r.gain, 2) + '</dd><dt>%MU</dt><dd>' + pct(r.mu) + '</dd>'
+          : '<dt>ช่วง MU</dt><dd>' + esc(r.muBand || '–') + '</dd>') + '</dl>';
     }
     box.innerHTML = html + scale;
   }
@@ -334,14 +360,15 @@
     if (!S.cart.lines.length) S.cart.lines.push(newLine(channel(S.cart.channelId)));
     var c = S.cart, ch = channel(c.channelId);
     var maxEnd = addDaysIso(c.start || S.boot.today, S.boot.settings.maxValidityDays);
-    $('#view').innerHTML = page('ขออนุมัติราคาพิเศษ', 'ส่งได้หลายรายการต่อครั้ง ทุกคำขอต้องได้รับอนุมัติจากหัวหน้า') +
+    $('#view').innerHTML = page('ขออนุมัติราคาพิเศษ', 'ส่งได้หลายรายการต่อครั้ง ทุกคำขอต้องได้รับอนุมัติจากหัวหน้า') + priceListBanner() +
       '<div class="card">' + pickerHtml('nr-pick', ch.id) +
-      '<div class="fields">' +
+      '<div class="fields head">' +
       '<div class="field"><label class="req" for="nr-cust">ชื่อคู่ค้า / ร้านค้า / ลูกค้า</label><input type="text" id="nr-cust" list="dl-customers" value="' + esc(c.customer) + '"></div>' +
       '<div class="field"><label for="nr-proj">สาขา / ชื่อโครงการ / แคมเปญ</label><input type="text" id="nr-proj" value="' + esc(c.project) + '"></div>' +
       '<div class="field"><label for="nr-start">เริ่มราคาพิเศษ</label><input type="date" id="nr-start" min="' + S.boot.today + '" value="' + esc(c.start) + '"></div>' +
-      '<div class="field"><label for="nr-end">สิ้นสุด</label><input type="date" id="nr-end" min="' + esc(c.start) + '" max="' + maxEnd + '" value="' + esc(c.end) + '"><span class="hint">ค่าเริ่มต้น ' + S.boot.settings.defaultValidityDays + ' วัน · สูงสุด ' + S.boot.settings.maxValidityDays + ' วัน</span></div>' +
-      '<div class="field wide"><label for="nr-note">หมายเหตุ / #Tag</label><input type="text" id="nr-note" placeholder="เช่น ส่งครั้งเดียว, แบ่งส่ง 2 ครั้ง, ลูกค้าเก่า" value="' + esc(c.note) + '"></div>' +
+      '<div class="field"><label for="nr-end">สิ้นสุด</label><input type="date" id="nr-end" min="' + esc(c.start) + '" max="' + maxEnd + '" value="' + esc(c.end) + '"></div>' +
+      '<div class="field wide"><label for="nr-note">หมายเหตุ / #Tag</label><input type="text" id="nr-note" placeholder="เช่น ส่งครั้งเดียว, แบ่งส่ง 2 ครั้ง, ลูกค้าเก่า" value="' + esc(c.note) + '">' +
+      '<span class="hint">ราคาพิเศษใช้ได้ ' + S.boot.settings.defaultValidityDays + ' วันโดยค่าเริ่มต้น · สูงสุด ' + S.boot.settings.maxValidityDays + ' วัน</span></div>' +
       '</div></div>' +
       '<div class="card" style="--disc-count:' + ch.discounts.length + '"><h2>รายการ</h2>' +
       '<div class="line-head"><span>' + esc(keyLabel(ch)) + '</span><span>จำนวน</span><span>ราคาพิเศษ (รวม VAT)</span>' +
@@ -380,21 +407,22 @@
     return '<div class="line" data-line="' + i + '">' +
       '<div class="field prod"><span class="label">' + esc(keyLabel(ch)) + '</span><input type="search" list="dl-' + esc(itemSet(ch.id)) + '" autocomplete="off" data-l-prod="' + i + '" value="' + esc(l.productKey) + '" placeholder="พิมพ์เพื่อค้นหา…"><div class="np" id="np-' + i + '">' + npText(ch, l) + '</div></div>' +
       '<div class="field"><span class="label">จำนวน</span><input type="text" inputmode="numeric" class="num" data-l-qty="' + i + '" value="' + esc(l.qty) + '"></div>' +
-      '<div class="field"><span class="label">ราคาพิเศษ (รวม VAT)</span><input type="text" inputmode="decimal" class="num" data-l-special="' + i + '" value="' + esc(l.special) + '"><div class="np"></div></div>' +
+      '<div class="field"><span class="label">ราคาพิเศษ (รวม VAT)</span><input type="text" inputmode="decimal" class="num" data-l-special="' + i + '" value="' + esc(l.special) + '"></div>' +
       discs +
       '<div class="ind-cell" id="li-' + i + '">' + lineInd(l) + '</div>' +
       '<div><button class="icon-btn" data-l-del="' + i + '" title="ลบรายการ">✕</button></div></div>';
   }
   function npText(ch, l) {
     var p = item(ch.id, l.productKey);
-    if (p) return (p.n !== p.k ? esc(p.n) + ' · ' : '') + (p.p ? normalLabel(ch.id) + ' ' + money(p.p) + ' ฿' : '');
-    return l.productKey ? '<span style="color:var(--danger)">ไม่พบในรายการ (จะส่งแบบไม่มีต้นทุน)</span>' : '';
+    if (p) return (p.n !== p.k ? esc(p.n) + ' · ' : '') + (p.p ? normalLabel(ch.id) + ' ' + money(p.p) + ' ฿' : '') + itemTags(p);
+    return l.productKey ? '<span style="color:var(--danger)">ไม่พบในรายการราคาปัจจุบัน (จะส่งแบบไม่มีต้นทุน)</span>' : '';
   }
   function lineInd(l) {
     if (l.busy) return '<span class="spin"></span>';
     if (!l.result) return '<span class="muted">–</span>';
     if (l.result.error) return '<span class="flag warn">' + esc(l.result.error) + '</span>';
-    return indBadge(l.result.indicator) + (canApprove() && l.result.mu !== undefined ? '<div class="muted">MU ' + pct(l.result.mu) + '</div>' : '');
+    return indBadge(l.result.indicator) + (canSeeCost() && l.result.mu !== undefined ? '<div class="muted">MU ' + pct(l.result.mu) + '</div>'
+      : (canApprove() && l.result.muBand ? '<div class="muted">' + esc(l.result.muBand) + '</div>' : ''));
   }
 
   var lineTimers = {};
@@ -554,7 +582,7 @@
     var rows = S.ap.rows || [];
     if (!rows.length) { $('#ap-list').innerHTML = '<div class="empty card">ไม่พบราคาที่อนุมัติ</div>'; return; }
     var appr = canApprove();
-    $('#ap-list').innerHTML = '<div class="muted" style="margin-bottom:6px">' + rows.length + ' รายการ</div><div class="table-wrap"><table class="cards"><thead><tr><th>รายการ</th><th>คู่ค้า / โครงการ</th><th class="num">ราคาพิเศษ</th><th class="num">ขายปกติ</th><th>ส่วนลด</th><th>Indicator</th>' + (appr ? '<th class="num">%MU</th>' : '') + '<th>ใช้ได้</th><th>Req. Id.</th><th>ผู้ขอ / ผู้อนุมัติ</th></tr></thead><tbody>' +
+    $('#ap-list').innerHTML = '<div class="muted" style="margin-bottom:6px">' + rows.length + ' รายการ</div><div class="table-wrap"><table class="cards"><thead><tr><th>รายการ</th><th>คู่ค้า / โครงการ</th><th class="num">ราคาพิเศษ</th><th class="num">ขายปกติ</th><th>ส่วนลด</th><th>Indicator</th>' + (appr ? '<th class="num">' + muHead() + '</th>' : '') + '<th>ใช้ได้</th><th>Req. Id.</th><th>ผู้ขอ / ผู้อนุมัติ</th></tr></thead><tbody>' +
       rows.map(function (r) {
         return '<tr><td data-label="รายการ"><b>' + esc(r.productName) + '</b>' + (r.productName !== r.productKey ? '<div class="muted">' + esc(r.productKey) + '</div>' : '') + '</td>' +
           '<td data-label="คู่ค้า">' + esc(r.customer) + (r.project ? '<div class="muted">' + esc(r.project) + '</div>' : '') + (r.note ? '<div class="muted">' + esc(r.note) + '</div>' : '') + '</td>' +
@@ -562,8 +590,9 @@
           '<td data-label="ขายปกติ" class="num">' + money(r.normalPrice) + '</td>' +
           '<td data-label="ส่วนลด" class="nowrap">' + discText(r) + '</td>' +
           '<td data-label="Indicator">' + indBadge(r.indicator) + '</td>' +
-          (appr ? '<td data-label="%MU" class="num">' + pct(r.mu) + '</td>' : '') +
-          '<td data-label="ใช้ได้" class="nowrap">' + dateTh(r.startDate) + ' – ' + dateTh(r.endDate) + (r.displayStatus === 'Expired' ? ' ' + statusBadge('Expired') : '') + '</td>' +
+          (appr ? '<td data-label="' + muHead() + '" class="num">' + muCell(r) + '</td>' : '') +
+          '<td data-label="ใช้ได้" class="nowrap">' + dateTh(r.startDate) + ' – ' + dateTh(r.endDate) + (r.displayStatus === 'Expired' ? ' ' + statusBadge('Expired') : '') +
+          (r.oldPriceList ? '<div><span class="tag old">อนุมัติจากราคารอบ ' + esc(r.priceList) + '</span></div>' : '') + '</td>' +
           '<td data-label="Req. Id." class="nowrap">' + esc(r.id) + '<div class="muted">' + esc(channelName(r.channel)) + '</div></td>' +
           '<td data-label="ผู้ขอ"><div class="muted">' + esc(r.requester) + '</div><div class="muted">✓ ' + esc(r.decidedBy) + '</div></td></tr>';
       }).join('') + '</tbody></table></div>';
@@ -572,7 +601,7 @@
   // ================= Approvals (supervisor) =================
   function viewApprovals() {
     S.sel = {};
-    $('#view').innerHTML = page('รออนุมัติ', 'ตรวจต้นทุนและ %MU แล้วอนุมัติหรือไม่อนุมัติ เลือกได้หลายรายการพร้อมกัน', '<button class="btn small" id="ap-reload">↻ รีเฟรช</button>') +
+    $('#view').innerHTML = page('รออนุมัติ', (canSeeCost() ? 'ตรวจต้นทุนและ %MU' : 'ตรวจ Indicator และช่วง MU') + ' แล้วอนุมัติหรือไม่อนุมัติ เลือกได้หลายรายการพร้อมกัน', '<button class="btn small" id="ap-reload">↻ รีเฟรช</button>') +
       '<div id="appr-list"><div class="loading"><span class="spin"></span></div></div>';
     $('#ap-reload').addEventListener('click', viewApprovals);
     run('listRequests', { status: 'Pending', limit: 3000 }).then(function (rows) {
@@ -601,19 +630,20 @@
         '<span class="meta">ใช้ได้ ' + dateTh(f.startDate) + ' – ' + dateTh(f.endDate) + '</span>' +
         (f.note ? '<span class="meta">📝 ' + esc(f.note) + '</span>' : '') +
         (own ? '<span class="flag warn">คำขอของคุณเอง — ต้องให้ผู้อนุมัติคนอื่นพิจารณา</span>' : '') + '</div>' +
-        '<div class="table-wrap"><table class="cards"><thead><tr><th></th><th>Req. Id.</th><th>รายการ</th><th class="num">จำนวน</th><th class="num">ขายปกติ</th><th class="num">ราคาพิเศษ</th><th>ส่วนลด</th><th class="num">ต้นทุน</th><th class="num">สุทธิ ex VAT</th><th class="num">Gain</th><th class="num">%MU</th><th>Indicator</th><th></th></tr></thead><tbody>' +
+        '<div class="table-wrap"><table class="cards"><thead><tr><th></th><th>Req. Id.</th><th>รายการ</th><th class="num">จำนวน</th><th class="num">ขายปกติ</th><th class="num">ราคาพิเศษ</th><th>ส่วนลด</th><th class="num">สุทธิ ex VAT</th>' +
+        (canSeeCost() ? '<th class="num">ต้นทุน</th><th class="num">Gain</th>' : '') + '<th class="num">' + muHead() + '</th><th>Indicator</th><th></th></tr></thead><tbody>' +
         g.rows.map(function (r) {
           return '<tr data-row="' + esc(r.id) + '"><td data-label="">' + (own ? '' : '<input type="checkbox" data-sel="' + esc(r.id) + '" data-g="' + esc(g.key) + '">') + '</td>' +
             '<td data-label="Req. Id." class="nowrap"><b>' + esc(r.id) + '</b></td>' +
-            '<td data-label="รายการ">' + esc(r.productName) + (r.productName !== r.productKey ? '<div class="muted">' + esc(r.productKey) + '</div>' : '') + flagsHtml(r.flags) + '</td>' +
+            '<td data-label="รายการ">' + esc(r.productName) + (r.isBundle ? '<span class="tag new">ชุดเซ็ต</span>' : '') +
+              (r.productName !== r.productKey ? '<div class="muted">' + esc(r.productKey) + '</div>' : '') + flagsHtml(r.flags) + repricedHtml(r) + '</td>' +
             '<td data-label="จำนวน" class="num">' + (r.qty || '–') + '</td>' +
-            '<td data-label="ขายปกติ" class="num">' + money(r.normalPrice) + '</td>' +
+            '<td data-label="ขายปกติ" class="num">' + money(r.normalPrice) + (r.priceList ? '<div class="muted">' + esc(r.priceList) + '</div>' : '') + '</td>' +
             '<td data-label="ราคาพิเศษ" class="num"><b>' + money(r.specialPrice) + '</b></td>' +
             '<td data-label="ส่วนลด" class="nowrap">' + discText(r) + '</td>' +
-            '<td data-label="ต้นทุน" class="num">' + money(r.cost, 2) + '</td>' +
             '<td data-label="สุทธิ ex VAT" class="num">' + money(r.netExVat, 2) + '</td>' +
-            '<td data-label="Gain" class="num">' + money(r.gain, 2) + '</td>' +
-            '<td data-label="%MU" class="num"><b>' + pct(r.mu) + '</b></td>' +
+            (canSeeCost() ? '<td data-label="ต้นทุน" class="num">' + money(r.cost, 2) + '</td><td data-label="Gain" class="num">' + money(r.gain, 2) + '</td>' : '') +
+            '<td data-label="' + muHead() + '" class="num">' + muCell(r) + '</td>' +
             '<td data-label="Indicator">' + indBadge(r.indicator) + '</td>' +
             '<td data-label=""><button class="btn small ghost" data-hist="' + esc(r.id) + '">ประวัติ</button></td></tr>';
         }).join('') + '</tbody></table></div></div>';
@@ -628,6 +658,14 @@
     $$('[data-hist]').forEach(function (b) { b.addEventListener('click', function () { toggleHistory(b); }); });
     renderActionBar();
   }
+  /** Pending request made on an older price list: what approving today means. */
+  function repricedHtml(r) {
+    var x = r.repriced;
+    if (!x) return '';
+    return '<div class="banner" style="margin:6px 0 0;padding:6px 10px">ราคาตั้งรอบใหม่ <b>' + esc(x.priceList) + '</b>: ปกติ ' + money(x.normalPrice) + ' ฿ → ' +
+      indBadge(x.indicator) + ' <span class="band">' + esc(canSeeCost() ? pct(x.mu) : x.muBand || '') + '</span><div class="hint">อนุมัติแล้วระบบจะบันทึกตามราคารอบใหม่</div></div>';
+  }
+
   function setSel(id, on) {
     if (on) S.sel[id] = true; else delete S.sel[id];
     var tr = $('tr[data-row="' + cssEsc(id) + '"]');
@@ -680,13 +718,13 @@
     if (next && next.classList.contains('hist-row')) { next.remove(); return; }
     var row = document.createElement('tr');
     row.className = 'hist-row';
-    row.innerHTML = '<td colspan="13" class="history"><span class="spin"></span></td>';
+    row.innerHTML = '<td colspan="14" class="history"><span class="spin"></span></td>';
     tr.parentNode.insertBefore(row, tr.nextSibling);
     run('getLineContext', id).then(function (ctx) {
       function mini(list) {
         if (!list.length) return '<div class="muted">ไม่มีข้อมูล</div>';
         return '<table><tbody>' + list.map(function (r) {
-          return '<tr><td class="nowrap">' + esc(r.id) + '</td><td class="nowrap">' + dateTh(r.requestedAt) + '</td><td>' + esc(r.customer) + '</td><td>' + esc(r.productName) + '</td><td class="num">' + money(r.specialPrice) + '</td><td class="nowrap">' + discText(r) + '</td><td class="num">' + pct(r.mu) + '</td><td>' + indBadge(r.indicator) + '</td><td>' + statusBadge(r.displayStatus) + '</td></tr>';
+          return '<tr><td class="nowrap">' + esc(r.id) + '</td><td class="nowrap">' + dateTh(r.requestedAt) + '</td><td>' + esc(r.customer) + '</td><td>' + esc(r.productName) + '</td><td class="num">' + money(r.specialPrice) + '</td><td class="nowrap">' + discText(r) + '</td><td class="num">' + muCell(r) + '</td><td>' + indBadge(r.indicator) + '</td><td>' + statusBadge(r.displayStatus) + '</td></tr>';
         }).join('') + '</tbody></table>';
       }
       row.firstChild.innerHTML = '<h3>รายการเดียวกัน (ล่าสุด 10)</h3>' + mini(ctx.sameProduct) + '<h3>คู่ค้าเดียวกัน (ล่าสุด 10)</h3>' + mini(ctx.sameCustomer);
@@ -725,7 +763,7 @@
     var rows = S.mon || [];
     if (!rows.length) { $('#mon-list').innerHTML = '<div class="empty card">ไม่พบคำขอ</div>'; return; }
     $('#mon-list').innerHTML = '<div class="muted" style="margin-bottom:6px">' + rows.length + ' รายการ' + (rows.length >= 500 ? ' (แสดงสูงสุด 500 — ใช้ตัวกรองเพื่อจำกัด)' : '') + '</div>' +
-      '<div class="table-wrap"><table class="cards"><thead><tr><th>Req. Id.</th><th>วันที่ขอ</th><th>คู่ค้า / โครงการ</th><th>รายการ</th><th class="num">จำนวน</th><th class="num">ขายปกติ</th><th class="num">ราคาพิเศษ</th><th>ส่วนลด</th><th class="num">ต้นทุน</th><th class="num">%MU</th><th>Indicator</th><th>สถานะ</th><th>ผู้ขอ / ผู้อนุมัติ</th></tr></thead><tbody>' +
+      '<div class="table-wrap"><table class="cards"><thead><tr><th>Req. Id.</th><th>วันที่ขอ</th><th>คู่ค้า / โครงการ</th><th>รายการ</th><th class="num">จำนวน</th><th class="num">ขายปกติ</th><th class="num">ราคาพิเศษ</th><th>ส่วนลด</th>' + (canSeeCost() ? '<th class="num">ต้นทุน</th>' : '') + '<th class="num">' + muHead() + '</th><th>Indicator</th><th>สถานะ</th><th>ผู้ขอ / ผู้อนุมัติ</th></tr></thead><tbody>' +
       rows.map(function (r) {
         return '<tr><td data-label="Req. Id." class="nowrap"><b>' + esc(r.id) + '</b><div class="muted">' + esc(channelName(r.channel)) + '</div></td>' +
           '<td data-label="วันที่ขอ" class="nowrap">' + dateTh(r.requestedAt) + '</td>' +
@@ -735,8 +773,8 @@
           '<td data-label="ขายปกติ" class="num">' + money(r.normalPrice) + '</td>' +
           '<td data-label="ราคาพิเศษ" class="num"><b>' + money(r.specialPrice) + '</b></td>' +
           '<td data-label="ส่วนลด" class="nowrap">' + discText(r) + '</td>' +
-          '<td data-label="ต้นทุน" class="num">' + money(r.cost, 2) + '</td>' +
-          '<td data-label="%MU" class="num"><b>' + pct(r.mu) + '</b></td>' +
+          (canSeeCost() ? '<td data-label="ต้นทุน" class="num">' + money(r.cost, 2) + '</td>' : '') +
+          '<td data-label="' + muHead() + '" class="num">' + muCell(r) + '</td>' +
           '<td data-label="Indicator">' + indBadge(r.indicator) + '</td>' +
           '<td data-label="สถานะ">' + statusBadge(r.displayStatus) + (r.comment ? '<div class="muted">' + esc(r.comment) + '</div>' : '') + '</td>' +
           '<td data-label="ผู้ขอ"><div class="muted">' + esc(r.requester) + '</div>' + (r.decidedBy ? '<div class="muted">✓ ' + esc(r.decidedBy) + '</div>' : '') + '</td></tr>';
@@ -747,9 +785,9 @@
     var rows = S.mon || [];
     var cols = [['id', 'Req. Id.'], ['groupId', 'Price group'], ['channel', 'Channel'], ['requestedAt', 'Requested'], ['customer', 'Customer'], ['project', 'Project'], ['note', 'Note'],
       ['productKey', 'Key'], ['productName', 'Item'], ['qty', 'Qty'], ['normalPrice', 'Normal price'], ['specialPrice', 'Special price'],
-      ['d1', 'Disc 1'], ['d2', 'Disc 2'], ['d3', 'Disc 3'], ['cost', 'Cost'], ['netExVat', 'Net ex VAT'], ['gain', 'Gain'], ['mu', '%MU'],
-      ['indicator', 'Indicator'], ['displayStatus', 'Status'], ['startDate', 'Start'], ['endDate', 'End'], ['requester', 'Requester'],
-      ['decidedBy', 'Decided by'], ['decidedAt', 'Decided at'], ['comment', 'Comment'], ['flags', 'Flags']];
+      ['d1', 'Disc 1'], ['d2', 'Disc 2'], ['d3', 'Disc 3'], ['netExVat', 'Net ex VAT']].concat(canSeeCost() ? [['cost', 'Cost'], ['gain', 'Gain'], ['mu', '%MU']] : [['muBand', 'MU band']]).concat([
+      ['priceList', 'Price list'], ['indicator', 'Indicator'], ['displayStatus', 'Status'], ['startDate', 'Start'], ['endDate', 'End'], ['requester', 'Requester'],
+      ['decidedBy', 'Decided by'], ['decidedAt', 'Decided at'], ['comment', 'Comment'], ['flags', 'Flags']]);
     var lines = [cols.map(function (c) { return c[1]; })].concat(rows.map(function (r) {
       return cols.map(function (c) { return /^d[123]$/.test(c[0]) ? r.discounts[Number(c[0].charAt(1)) - 1] : r[c[0]]; });
     }));
@@ -800,11 +838,11 @@
       kpi('คำขอในช่วงนี้', k.total) +
       kpi('รออนุมัติตอนนี้', k.pendingNow, k.pendingNow ? '<a href="#approvals" id="k-pending">ไปที่หน้ารออนุมัติ →</a>' : '') +
       kpi('อนุมัติ / ไม่อนุมัติ', k.approved + ' / ' + k.rejected) +
-      kpi('%MU เฉลี่ยที่อนุมัติ', pct(k.avgMuApproved, 1)) +
+      (d.showMu ? kpi('%MU เฉลี่ยที่อนุมัติ', pct(k.avgMuApproved, 1)) : '') +
       kpi('อนุมัติทั้งที่ MU ต่ำ', k.riskyApproved, 'VERY LOW หรือ ขาดทุน') +
       kpi('จะหมดอายุใน 7 วัน', k.expiringSoon) + '</div>';
 
-    html += '<div class="grid-2"><div class="card"><h2>จำนวนคำขอตาม Indicator</h2><div class="bars">' +
+    html += '<div class="grid-2 even"><div class="card"><h2>จำนวนคำขอตาม Indicator</h2><div class="bars">' +
       d.byIndicator.map(function (x) {
         return '<div class="bar-row" title="' + esc(x.indicator) + ': ' + x.total + ' คำขอ, อนุมัติ ' + x.approved + '">' +
           '<span>' + indBadge(x.indicator) + '</span><div class="bar-track"><div class="bar-fill" style="width:' + (x.total / maxInd * 100) + '%;background:' + IND_COLOR[x.indicator] + '"></div></div>' +
@@ -814,33 +852,165 @@
       d.byMonth.map(function (x) {
         return '<div class="col" title="' + x.month + ': ' + x.total + ' คำขอ, อนุมัติ ' + x.approved + '"><span class="colval">' + x.total + '</span><div class="colbar" style="height:' + (x.total / maxMonth * 100) + '%"></div></div>';
       }).join('') + '</div><div class="col-labels">' + d.byMonth.map(function (x) { return '<span>' + x.month.substring(2) + '</span>'; }).join('') + '</div>' +
-      '<h2 style="margin-top:18px">%MU เฉลี่ยที่อนุมัติ รายเดือน</h2><div class="cols" style="height:110px">' +
+      (d.showMu ? '<h2 style="margin-top:18px">%MU เฉลี่ยที่อนุมัติ รายเดือน</h2><div class="cols" style="height:110px">' +
       d.byMonth.map(function (x) {
         return '<div class="col" title="' + x.month + ': ' + pct(x.avgMu, 1) + '"><span class="colval">' + (x.avgMu === null ? '–' : pct(x.avgMu, 0)) + '</span><div class="colbar" style="height:' + ((x.avgMu || 0) / maxMu * 100) + '%;opacity:.7"></div></div>';
-      }).join('') + '</div><div class="col-labels">' + d.byMonth.map(function (x) { return '<span>' + x.month.substring(2) + '</span>'; }).join('') + '</div></div></div>';
+      }).join('') + '</div><div class="col-labels">' + d.byMonth.map(function (x) { return '<span>' + x.month.substring(2) + '</span>'; }).join('') + '</div>' : '') + '</div></div>';
 
-    html += '<div class="grid-2" style="margin-top:16px"><div class="card"><h2>ตามผู้ขอ</h2>' + (d.byRequester.length ? '<div class="table-wrap"><table><thead><tr><th>ผู้ขอ</th><th class="num">คำขอ</th><th class="num">รอ</th><th class="num">อนุมัติ</th><th class="num">ไม่อนุมัติ</th><th class="num">MU ต่ำ</th><th class="num">%MU เฉลี่ย</th></tr></thead><tbody>' +
-      d.byRequester.map(function (x) { return '<tr><td>' + esc(x.email) + '</td><td class="num">' + x.total + '</td><td class="num">' + x.pending + '</td><td class="num">' + x.approved + '</td><td class="num">' + x.rejected + '</td><td class="num">' + x.lowCount + '</td><td class="num">' + pct(x.avgMu, 1) + '</td></tr>'; }).join('') +
+    var muTh = d.showMu ? '<th class="num">%MU เฉลี่ย</th>' : '';
+    var muTd = function (v) { return d.showMu ? '<td class="num">' + pct(v, 1) + '</td>' : ''; };
+    html += '<div class="grid-2 even stack-gap"><div class="card"><h2>ตามผู้ขอ</h2>' + (d.byRequester.length ? '<div class="table-wrap"><table><thead><tr><th>ผู้ขอ</th><th class="num">คำขอ</th><th class="num">รอ</th><th class="num">อนุมัติ</th><th class="num">ไม่อนุมัติ</th><th class="num">MU ต่ำ</th>' + muTh + '</tr></thead><tbody>' +
+      d.byRequester.map(function (x) { return '<tr><td>' + esc(x.email) + '</td><td class="num">' + x.total + '</td><td class="num">' + x.pending + '</td><td class="num">' + x.approved + '</td><td class="num">' + x.rejected + '</td><td class="num">' + x.lowCount + '</td>' + muTd(x.avgMu) + '</tr>'; }).join('') +
       '</tbody></table></div>' : '<div class="empty">ไม่มีข้อมูล</div>') + '</div>' +
-      '<div class="card"><h2>ตามช่องทาง</h2>' + (d.byChannel.length ? '<div class="table-wrap"><table><thead><tr><th>ช่องทาง</th><th class="num">คำขอ</th><th class="num">อนุมัติ</th><th class="num">%MU เฉลี่ยที่อนุมัติ</th></tr></thead><tbody>' +
-      d.byChannel.map(function (x) { return '<tr><td>' + esc(x.name) + '<div class="muted">' + esc(x.group) + '</div></td><td class="num">' + x.total + '</td><td class="num">' + x.approved + '</td><td class="num">' + pct(x.avgMu, 1) + '</td></tr>'; }).join('') +
+      '<div class="card"><h2>ตามช่องทาง</h2>' + (d.byChannel.length ? '<div class="table-wrap"><table><thead><tr><th>ช่องทาง</th><th class="num">คำขอ</th><th class="num">อนุมัติ</th>' + muTh + '</tr></thead><tbody>' +
+      d.byChannel.map(function (x) { return '<tr><td>' + esc(x.name) + '<div class="muted">' + esc(x.group) + '</div></td><td class="num">' + x.total + '</td><td class="num">' + x.approved + '</td>' + muTd(x.avgMu) + '</tr>'; }).join('') +
       '</tbody></table></div>' : '<div class="empty">ไม่มีข้อมูล</div>') + '</div></div>';
 
     var mini = function (title, list, empty) {
-      return '<div class="card"><h2>' + title + '</h2>' + (list.length ? '<div class="table-wrap"><table class="cards"><thead><tr><th>Req. Id.</th><th>คู่ค้า</th><th>รายการ</th><th class="num">ราคาพิเศษ</th><th class="num">%MU</th><th>Indicator</th><th>ใช้ได้ถึง</th><th>อนุมัติโดย</th></tr></thead><tbody>' +
-        list.map(function (r) { return '<tr><td data-label="Req. Id." class="nowrap">' + esc(r.id) + '</td><td data-label="คู่ค้า">' + esc(r.customer) + '</td><td data-label="รายการ">' + esc(r.productName) + '</td><td data-label="ราคาพิเศษ" class="num">' + money(r.specialPrice) + '</td><td data-label="%MU" class="num">' + pct(r.mu) + '</td><td data-label="Indicator">' + indBadge(r.indicator) + '</td><td data-label="ใช้ได้ถึง" class="nowrap">' + dateTh(r.endDate) + '</td><td data-label="อนุมัติโดย"><span class="muted">' + esc(r.decidedBy) + '</span></td></tr>'; }).join('') +
+      return '<div class="card"><h2>' + title + '</h2>' + (list.length ? '<div class="table-wrap"><table class="cards"><thead><tr><th>Req. Id.</th><th>คู่ค้า</th><th>รายการ</th><th class="num">ราคาพิเศษ</th><th class="num">' + muHead() + '</th><th>Indicator</th><th>ใช้ได้ถึง</th><th>อนุมัติโดย</th></tr></thead><tbody>' +
+        list.map(function (r) { return '<tr><td data-label="Req. Id." class="nowrap">' + esc(r.id) + '</td><td data-label="คู่ค้า">' + esc(r.customer) + '</td><td data-label="รายการ">' + esc(r.productName) + '</td><td data-label="ราคาพิเศษ" class="num">' + money(r.specialPrice) + '</td><td data-label="' + muHead() + '" class="num">' + muCell(r) + '</td><td data-label="Indicator">' + indBadge(r.indicator) + '</td><td data-label="ใช้ได้ถึง" class="nowrap">' + dateTh(r.endDate) + '</td><td data-label="อนุมัติโดย"><span class="muted">' + esc(r.decidedBy) + '</span></td></tr>'; }).join('') +
         '</tbody></table></div>' : '<div class="empty">' + empty + '</div>') + '</div>';
     };
-    html += '<div style="margin-top:16px">' + mini('อนุมัติทั้งที่ MU ต่ำ (VERY LOW / ขาดทุน)', d.risky, 'ไม่มี') + mini('ราคาพิเศษที่จะหมดอายุใน 7 วัน', d.expiring, 'ไม่มี') + '</div>';
+    html += '<div class="stack-gap">' + mini('อนุมัติทั้งที่ MU ต่ำ (VERY LOW / ขาดทุน)', d.risky, 'ไม่มี') + mini('ราคาพิเศษที่จะหมดอายุใน 7 วัน', d.expiring, 'ไม่มี') + '</div>';
     $('#dash').innerHTML = html;
     var kp = $('#k-pending');
     if (kp) kp.addEventListener('click', function (e) { e.preventDefault(); go('approvals'); });
   }
 
+  // ================= Bundles (ชุดเซ็ต / DUMMY SET) =================
+  function bundleBrands() {
+    var seen = {};
+    S.boot.groups.forEach(function (g) { if (g.costSource === 'PRODUCT') g.channels.forEach(function (c) { if (c.brand) seen[c.brand] = true; }); });
+    return Object.keys(seen);
+  }
+
+  function viewBundles() {
+    var brands = bundleBrands();
+    S.bf = S.bf || { brand: brands[0], rows: [{ k: '', q: '1' }, { k: '', q: '1' }], label: '', q: '' };
+    var f = S.bf;
+    $('#view').innerHTML = page('ชุดเซ็ตโปรโมชั่น', 'จับสินค้า 2–5 รายการเป็นชุดเซ็ตเพื่อเสนอโปรโมชั่น ทุกคนใช้ชุดเซ็ตร่วมกันได้ ราคาตั้งของเซ็ต = ผลรวมราคาตั้งในรอบราคาปัจจุบัน') +
+      '<div class="grid-2"><div class="card"><h2>สร้างชุดเซ็ตใหม่</h2>' +
+      '<div class="field" style="margin-bottom:12px"><span class="label">แบรนด์</span><div class="seg" id="bf-brand">' + brands.map(function (b) {
+        return '<button type="button" data-b="' + esc(b) + '" class="' + (b === f.brand ? 'on' : '') + '">' + esc(b) + '</button>';
+      }).join('') + '</div></div>' +
+      '<div class="bundle-rows">' + f.rows.map(function (r, i) {
+        var it = item(chForBrand(f.brand), r.k);
+        return '<div class="bundle-row"><div class="field"><span class="label">สินค้าที่ ' + (i + 1) + '</span><input type="search" list="dl-P-' + esc(f.brand) + '" autocomplete="off" data-bk="' + i + '" value="' + esc(r.k) + '" placeholder="พิมพ์เพื่อค้นหา…">' +
+          '<div class="np">' + (it ? (it.n !== it.k ? esc(it.n) + ' · ' : '') + money(it.p) + ' ฿' + itemTags(it) : (r.k ? '<span style="color:var(--danger)">ไม่พบในรอบราคาปัจจุบัน</span>' : '')) + '</div></div>' +
+          '<div class="field"><span class="label">จำนวน</span><input type="text" inputmode="numeric" class="num" data-bq="' + i + '" value="' + esc(r.q) + '"></div>' +
+          '<div class="field"><span class="label">&nbsp;</span><button class="icon-btn" data-bdel="' + i + '" title="ลบ"' + (f.rows.length <= 2 ? ' disabled' : '') + '>✕</button></div></div>';
+      }).join('') + '</div>' +
+      '<div class="row" style="margin:10px 0 14px"><button class="btn small" id="bf-add"' + (f.rows.length >= 5 ? ' disabled' : '') + '>+ เพิ่มสินค้า</button></div>' +
+      '<div class="field"><label for="bf-label">ชื่อโปรโมชั่น (ไม่บังคับ)</label><input type="text" id="bf-label" maxlength="120" placeholder="เช่น โปรครัวครบชุด 11.11" value="' + esc(f.label) + '"><span class="hint"></span></div>' +
+      '<dl class="kv"><dt>ชื่อเซ็ต</dt><dd id="bf-name">' + esc(bundleName(f)) + '</dd><dt>ราคาตั้งรวม</dt><dd id="bf-total">' + bundleTotal(f) + '</dd></dl>' +
+      '<div class="row end" style="margin-top:14px"><button class="btn primary" id="bf-save">สร้างชุดเซ็ต</button></div></div>' +
+      '<div class="card"><h2>ชุดเซ็ตทั้งหมด</h2><div class="filters"><input type="search" id="bf-q" placeholder="ค้นหาชุดเซ็ต / สินค้า" value="' + esc(f.q) + '" style="max-width:none"></div><div id="bf-list"></div></div></div>';
+
+    $$('#bf-brand [data-b]').forEach(function (b) {
+      b.addEventListener('click', function () { f.brand = b.getAttribute('data-b'); f.rows = [{ k: '', q: '1' }, { k: '', q: '1' }]; viewBundles(); });
+    });
+    $$('[data-bk]').forEach(function (inp) {
+      inp.addEventListener('change', function () { f.rows[Number(inp.getAttribute('data-bk'))].k = inp.value; viewBundles(); });
+      inp.addEventListener('input', function () { f.rows[Number(inp.getAttribute('data-bk'))].k = inp.value; $('#bf-name').textContent = bundleName(f); $('#bf-total').textContent = bundleTotal(f); });
+    });
+    $$('[data-bq]').forEach(function (inp) {
+      inp.addEventListener('input', function () { f.rows[Number(inp.getAttribute('data-bq'))].q = inp.value; $('#bf-name').textContent = bundleName(f); $('#bf-total').textContent = bundleTotal(f); });
+    });
+    $$('[data-bdel]').forEach(function (b) { b.addEventListener('click', function () { f.rows.splice(Number(b.getAttribute('data-bdel')), 1); viewBundles(); }); });
+    $('#bf-add').addEventListener('click', function () { f.rows.push({ k: '', q: '1' }); viewBundles(); });
+    $('#bf-label').addEventListener('input', function (e) { f.label = e.target.value; });
+    $('#bf-q').addEventListener('input', debounce(function (e) { f.q = e.target.value; renderBundleList(); }, 200));
+    $('#bf-save').addEventListener('click', function () {
+      var btn = $('#bf-save');
+      btn.disabled = true;
+      run('createBundle', { brand: f.brand, label: f.label, items: f.rows.map(function (r) { return { productKey: r.k.trim(), qty: r.q }; }) }).then(function (b) {
+        S.boot.bundles.push(b);
+        addItem('P-' + b.b, b.k, b.n, b.p, { bundle: true });
+        S.bf = null;
+        toast('สร้างชุดเซ็ต "' + b.k + '" แล้ว');
+        viewBundles();
+      }).catch(function (e) { fail(e); btn.disabled = false; });
+    });
+    renderBundleList();
+  }
+
+  function chForBrand(brand) {
+    for (var i = 0; i < S.boot.groups.length; i++) {
+      var g = S.boot.groups[i];
+      if (g.costSource !== 'PRODUCT') continue;
+      for (var j = 0; j < g.channels.length; j++) if (g.channels[j].brand === brand) return g.channels[j].id;
+    }
+    return '';
+  }
+  function bundleName(f) {
+    var ch = chForBrand(f.brand);
+    return f.rows.filter(function (r) { return r.k.trim(); }).map(function (r) {
+      var it = item(ch, r.k); var k = it ? it.k : r.k.trim(); var q = parseInt(r.q, 10) || 1;
+      return q > 1 ? k + ' ×' + q : k;
+    }).join(' + ') || '–';
+  }
+  function bundleTotal(f) {
+    var ch = chForBrand(f.brand), total = 0, ok = false;
+    for (var i = 0; i < f.rows.length; i++) {
+      var r = f.rows[i];
+      if (!r.k.trim()) continue;
+      var it = item(ch, r.k);
+      if (!it || it.bundle || !it.p) return '–';
+      total += it.p * (parseInt(r.q, 10) || 1); ok = true;
+    }
+    return ok ? money(total) + ' ฿' : '–';
+  }
+
+  function renderBundleList() {
+    var q = (S.bf.q || '').toLowerCase();
+    var list = S.boot.bundles.filter(function (b) { return !q || (b.k + ' ' + b.n + ' ' + b.by).toLowerCase().indexOf(q) !== -1; });
+    if (!list.length) { $('#bf-list').innerHTML = '<div class="empty">ยังไม่มีชุดเซ็ต</div>'; return; }
+    $('#bf-list').innerHTML = '<div class="table-wrap"><table class="cards"><thead><tr><th>ชุดเซ็ต</th><th class="num">ราคาตั้งรวม</th><th>สร้างโดย</th><th></th></tr></thead><tbody>' +
+      list.slice(0, 300).map(function (b) {
+        var mine = b.by === S.boot.user.email || S.boot.user.isAdmin;
+        return '<tr><td data-label="ชุดเซ็ต"><b>' + esc(b.n) + '</b> <span class="group-chip">' + esc(b.b) + '</span><div class="muted">' + esc(b.k) + '</div></td>' +
+          '<td data-label="ราคาตั้งรวม" class="num">' + (b.p ? money(b.p) : '<span class="muted">มีสินค้าไม่อยู่ในรอบราคา</span>') + '</td>' +
+          '<td data-label="สร้างโดย"><span class="muted">' + esc(b.by) + '</span></td>' +
+          '<td data-label=""><div class="row"><button class="btn small" data-buse="' + b.id + '">ตรวจราคา</button>' + (mine ? '<button class="btn small ghost" data-bremove="' + b.id + '">ลบ</button>' : '') + '</div></td></tr>';
+      }).join('') + '</tbody></table></div>' + (list.length > 300 ? '<p class="hint">แสดง 300 รายการแรก — พิมพ์ค้นหาเพื่อกรอง</p>' : '');
+    $$('[data-buse]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var b = S.boot.bundles.filter(function (x) { return String(x.id) === btn.getAttribute('data-buse'); })[0];
+        var ch = chForBrand(b.b);
+        S.pc = { channelId: ch, productKey: b.k, special: '', discs: defaultDiscs(channel(ch)), result: null };
+        go('check');
+      });
+    });
+    $$('[data-bremove]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (!confirm('ลบชุดเซ็ตนี้? (คำขอเดิมที่ใช้เซ็ตนี้ไม่ได้รับผลกระทบ)')) return;
+        var id = Number(btn.getAttribute('data-bremove'));
+        run('deleteBundle', id).then(function () {
+          var b = S.boot.bundles.filter(function (x) { return x.id === id; })[0];
+          S.boot.bundles = S.boot.bundles.filter(function (x) { return x.id !== id; });
+          if (b && S.items['P-' + b.b]) delete S.items['P-' + b.b][b.k.toUpperCase()];
+          toast('ลบชุดเซ็ตแล้ว'); renderBundleList();
+        }).catch(fail);
+      });
+    });
+  }
+
+  /** Adds one entry to an item set and its datalist (used after creating a bundle). */
+  function addItem(set, k, n, p, extra) {
+    var e = { k: k, n: n || k, p: p };
+    Object.keys(extra || {}).forEach(function (x) { e[x] = extra[x]; });
+    (S.items[set] = S.items[set] || {})[String(k).toUpperCase()] = e;
+    var dl = document.getElementById('dl-' + set);
+    if (!dl) { dl = document.createElement('datalist'); dl.id = 'dl-' + set; $('#datalists').appendChild(dl); }
+    var o = document.createElement('option');
+    o.value = k; o.textContent = (n && n !== k ? n + ' · ' : '') + (p ? money(p) + ' ฿' : '') + ' · ชุดเซ็ต';
+    dl.appendChild(o);
+  }
+
   // ================= Admin =================
   var IMPORT_TYPES = [
     ['cost_price_sheet', 'ต้นทุน/ราคาสินค้า — ชีต _Cost&Price (CSV)'],
-    ['cal_dummy_sheet', 'Dummy set — ชีต _CalDummy (CSV)'],
+    ['cal_dummy_sheet', 'ชุดเซ็ตเดิม — ชีต _CalDummy / DUMMY SET (CSV)'],
     ['products', 'สินค้า (CSV: brand, key, name, cost, normal_price)'],
     ['project_costs', 'ต้นทุนโครงการ Joseph Space (CSV: project_key, customer, description, cost)'],
     ['landed_items', 'สินค้านำเข้า JS-OVS — ชีต _Manual.Cal หรือ CSV'],
@@ -862,11 +1032,14 @@
     $('#adm').innerHTML =
       '<div class="grid-2"><div class="card"><h2>นำเข้าข้อมูล (CSV)</h2>' +
       '<p class="hint">Google Sheets → File → Download → Comma-separated values (.csv) ของแท็บที่ต้องการ · n8n สามารถส่งข้อมูลเดียวกันอัตโนมัติผ่าน /api/integrations/import</p>' +
-      '<div class="import-row"><div class="field"><label>ประเภท</label><select id="imp-type">' + IMPORT_TYPES.map(function (t) { return '<option value="' + t[0] + '">' + esc(t[1]) + '</option>'; }).join('') + '</select></div>' +
-      '<div class="field"><label>Brand (เฉพาะ CSV สินค้า)</label><select id="imp-brand"><option>EVE</option><option>FOSTER</option></select></div>' +
-      '<div class="field"><label>ไฟล์</label><input type="file" id="imp-file" accept=".csv,text/csv"></div>' +
-      '<button class="btn primary" id="imp-go">นำเข้า</button></div><div id="imp-res"></div>' +
-      '<dl class="kv"><dt>สินค้า</dt><dd>' + c.products + ' (ไม่มีต้นทุน ' + c.productsWithoutCost + ')</dd>' +
+      '<div class="fields"><div class="field wide"><label>ประเภท</label><select id="imp-type">' + IMPORT_TYPES.map(function (t) { return '<option value="' + t[0] + '">' + esc(t[1]) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field pl-only"><label>รอบราคา</label><input type="text" id="imp-pl" placeholder="เช่น AUG26" list="dl-pricelists"><span class="hint">ชื่อเดิม = แก้ไขรอบนั้น · ชื่อใหม่ = สร้างรอบใหม่</span></div>' +
+      '<div class="field pl-only"><label>มีผลตั้งแต่ (รอบใหม่)</label><input type="date" id="imp-eff"><span class="hint">ว่าง = วันนี้</span></div>' +
+      '<div class="field brand-only"><label>Brand (CSV สินค้า)</label><select id="imp-brand"><option>EVE</option><option>FOSTER</option></select><span class="hint"></span></div>' +
+      '<div class="field"><label>ไฟล์ CSV</label><input type="file" id="imp-file" accept=".csv,text/csv"><span class="hint"></span></div></div>' +
+      '<datalist id="dl-pricelists">' + a.priceLists.map(function (l) { return '<option value="' + esc(l.name) + '">'; }).join('') + '</datalist>' +
+      '<div class="row end" style="margin-top:10px"><button class="btn primary" id="imp-go">นำเข้า</button></div><div id="imp-res"></div>' +
+      '<dl class="kv"><dt>สินค้า (ทุกรอบราคา)</dt><dd>' + c.products + ' (ไม่มีต้นทุน ' + c.productsWithoutCost + ')</dd><dt>ชุดเซ็ต</dt><dd>' + c.bundles + '</dd>' +
       '<dt>ต้นทุนโครงการ JS</dt><dd>' + c.projectCosts + '</dd><dt>สินค้านำเข้า JS-OVS</dt><dd>' + c.landedItems + '</dd>' +
       '<dt>คำขอทั้งหมด</dt><dd>' + c.requests + '</dd></dl></div>' +
 
@@ -879,10 +1052,20 @@
           '<span class="hint">' + esc(s.description) + '</span></div>';
       }).join('') + '</div><div class="row end" style="margin-top:12px"><button class="btn primary" id="adm-save">บันทึก</button></div></div></div>' +
 
-      '<div class="card" style="margin-top:16px"><h2>ผู้ใช้และสิทธิ์</h2><p class="hint">ทุกคนที่ใช้อีเมลบริษัทเข้าใช้ได้ในฐานะ SALES อัตโนมัติ เพิ่มที่นี่เพื่อกำหนดเป็น SUPERVISOR / ADMIN หรือปิดบัญชี</p>' +
-      '<div class="table-wrap"><table><thead><tr><th>อีเมล</th><th>ชื่อ</th><th>Role</th><th>ใช้งาน</th><th>เข้าใช้ล่าสุด</th><th></th></tr></thead><tbody>' +
+      '<div class="card stack-gap"><h2>รอบราคา (Price list)</h2><p class="hint">ราคาตั้งปรับทุกรอบ (~4 เดือน) — นำเข้ารอบใหม่ล่วงหน้าได้ ระบบสลับให้อัตโนมัติเมื่อถึงวันมีผล ราคาพิเศษที่อนุมัติแล้วใช้ได้จนวันสิ้นสุดเดิม คำขอที่ยังรออนุมัติจะถูกคิดใหม่ด้วยราคารอบใหม่</p>' +
+      '<div class="table-wrap"><table><thead><tr><th>รอบ</th><th>มีผลตั้งแต่</th><th>แบรนด์ / สถานะ</th><th class="num">คำขอ</th><th>หมายเหตุ</th><th></th></tr></thead><tbody>' +
+      a.priceLists.map(function (l) {
+        var st = { current: '<span class="tag new">ใช้อยู่</span>', upcoming: '<span class="tag up">รอบหน้า</span>', past: '<span class="tag old">เก่า</span>' };
+        return '<tr><td><b>' + esc(l.name) + '</b></td><td class="nowrap"><input type="date" data-pl-eff="' + l.id + '" value="' + esc(l.effectiveFrom) + '" style="width:auto;min-height:32px;padding:4px 8px"></td>' +
+          '<td>' + (l.brands.length ? l.brands.map(function (b) { return esc(b.brand) + ' ' + b.products + ' รายการ ' + st[b.status]; }).join('<br>') : '<span class="muted">ไม่มีสินค้า</span>') + '</td>' +
+          '<td class="num">' + l.requests + '</td><td class="muted">' + esc(l.note) + '</td>' +
+          '<td><div class="row"><button class="btn small ghost" data-pl-save="' + l.id + '">บันทึกวันที่</button>' +
+          (l.effectiveFrom > S.boot.today && !l.requests ? '<button class="btn small bad" data-pl-del="' + l.id + '">ลบ</button>' : '') + '</div></td></tr>';
+      }).join('') + '</tbody></table></div></div>' +
+      '<div class="card stack-gap"><h2>ผู้ใช้และสิทธิ์</h2><p class="hint">ทุกคนที่ใช้อีเมลบริษัทเข้าใช้ได้ในฐานะ SALES อัตโนมัติ เพิ่มที่นี่เพื่อกำหนดเป็น SUPERVISOR / ADMIN หรือปิดบัญชี · สิทธิ์ดูต้นทุนกำหนดได้เฉพาะที่เซิร์ฟเวอร์ (COST_VIEWERS) ไม่สามารถให้สิทธิ์จากหน้านี้</p>' +
+      '<div class="table-wrap"><table><thead><tr><th>อีเมล</th><th>ชื่อ</th><th>Role</th><th>ดูต้นทุน</th><th>ใช้งาน</th><th>เข้าใช้ล่าสุด</th><th></th></tr></thead><tbody>' +
       a.users.map(function (u) {
-        return '<tr><td>' + esc(u.email) + '</td><td>' + esc(u.name) + '</td><td>' + esc(u.role) + '</td><td>' + (u.active ? '✓' : '–') + '</td><td class="nowrap">' + (u.lastLoginAt ? dateTh(u.lastLoginAt) : '–') + '</td>' +
+        return '<tr><td>' + esc(u.email) + '</td><td>' + esc(u.name) + '</td><td>' + esc(u.role) + '</td><td>' + (u.canViewCost ? '🔒 ✓' : '–') + '</td><td>' + (u.active ? '✓' : '–') + '</td><td class="nowrap">' + (u.lastLoginAt ? dateTh(u.lastLoginAt) : '–') + '</td>' +
           '<td><button class="btn small ghost" data-edit-user="' + esc(u.email) + '">แก้ไข</button></td></tr>';
       }).join('') + '</tbody></table></div>' +
       '<div class="user-form"><div class="field"><label>อีเมล</label><input type="text" id="u-email" placeholder="name@eve.co.th"></div>' +
@@ -891,7 +1074,7 @@
       '<label class="row" style="font-size:13px;padding-bottom:10px"><input type="checkbox" id="u-active" checked> ใช้งาน</label>' +
       '<button class="btn primary" id="u-save">บันทึกผู้ใช้</button></div></div>' +
 
-      '<div class="card" style="margin-top:16px"><h2>กลุ่มราคาและช่องทาง</h2><p class="hint">อ่านอย่างเดียว — แก้ไขที่ server/config/price-groups.json แล้วเปิด Pull Request (AI ตรวจโค้ด → คุณอนุมัติ → deploy อัตโนมัติ)</p>' +
+      '<div class="card stack-gap"><h2>กลุ่มราคาและช่องทาง</h2><p class="hint">อ่านอย่างเดียว — แก้ไขที่ server/config/price-groups.json แล้วเปิด Pull Request (AI ตรวจโค้ด → คุณอนุมัติ → deploy อัตโนมัติ)</p>' +
       a.catalog.map(function (g) {
         return '<h3 style="margin:14px 0 4px">' + esc(g.name) + ' <span class="group-chip">' + esc(g.costSource) + '</span></h3><div class="rules">' + rulesText(g.indicatorRules) + '</div>' +
           '<div class="table-wrap" style="margin-top:6px"><table><thead><tr><th>ช่องทาง</th><th>Prefix</th><th>สูตร</th><th>ส่วนลด (default / min–max)</th></tr></thead><tbody>' +
@@ -901,19 +1084,43 @@
           }).join('') + '</tbody></table></div>';
       }).join('') + '</div>' +
 
-      '<div class="card" style="margin-top:16px"><h2>บันทึกการใช้งานล่าสุด</h2><div class="table-wrap"><table><thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>การกระทำ</th><th>Req. Id.</th><th>รายละเอียด</th></tr></thead><tbody>' +
+      '<div class="card stack-gap"><h2>บันทึกการใช้งานล่าสุด</h2><div class="table-wrap"><table><thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>การกระทำ</th><th>Req. Id.</th><th>รายละเอียด</th></tr></thead><tbody>' +
       a.recentLog.map(function (l) { return '<tr><td class="nowrap">' + esc(l.at.replace('T', ' ').slice(0, 16)) + '</td><td>' + esc(l.user) + '</td><td>' + esc(l.action) + '</td><td>' + esc(l.ids) + '</td><td class="muted">' + esc(l.detail.slice(0, 160)) + '</td></tr>'; }).join('') +
       '</tbody></table></div></div>';
 
+    var syncImp = function () {
+      var t = $('#imp-type').value;
+      $$('.pl-only').forEach(function (el) { el.classList.toggle('hidden', t !== 'cost_price_sheet' && t !== 'products'); });
+      $$('.brand-only').forEach(function (el) { el.classList.toggle('hidden', t !== 'products'); });
+    };
+    $('#imp-type').addEventListener('change', syncImp);
+    syncImp();
+    $$('[data-pl-save]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var id = b.getAttribute('data-pl-save');
+        var l = a.priceLists.filter(function (x) { return String(x.id) === id; })[0];
+        run('savePriceList', { id: Number(id), effectiveFrom: $('[data-pl-eff="' + id + '"]').value, note: l.note })
+          .then(function (info) { toast('บันทึกแล้ว — โหลดหน้าใหม่เพื่อใช้ราคาตามวันที่ใหม่'); renderAdmin(info); }).catch(fail);
+      });
+    });
+    $$('[data-pl-del]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        if (!confirm('ลบรอบราคานี้และสินค้าทั้งหมดในรอบนี้?')) return;
+        run('deletePriceList', Number(b.getAttribute('data-pl-del'))).then(function (info) { toast('ลบแล้ว'); renderAdmin(info); }).catch(fail);
+      });
+    });
     $('#imp-go').addEventListener('click', function () {
       var file = $('#imp-file').files[0];
       if (!file) return toast('กรุณาเลือกไฟล์ CSV', true);
       var btn = $('#imp-go');
       btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
       file.text().then(function (csv) {
-        return run('importCsv', { type: $('#imp-type').value, brand: $('#imp-brand').value, csv: csv, fileName: file.name });
+        var t = $('#imp-type').value;
+        var pl = (t === 'cost_price_sheet' || t === 'products') ? { name: $('#imp-pl').value.trim(), effectiveFrom: $('#imp-eff').value } : null;
+        if (pl && !pl.name) throw new Error('กรุณาระบุชื่อรอบราคา');
+        return run('importCsv', { type: t, brand: $('#imp-brand').value, priceList: pl, csv: csv, fileName: file.name });
       }).then(function (r) {
-        $('#imp-res').innerHTML = '<div class="notice" style="margin-top:10px">นำเข้า ' + r.imported + ' รายการ' + (r.skipped ? ', ข้าม ' + r.skipped + ' (มีอยู่แล้ว)' : '') +
+        $('#imp-res').innerHTML = '<div class="notice" style="margin-top:10px">นำเข้า ' + r.imported + ' รายการ' + (r.priceList ? ' เข้ารอบราคา ' + esc(r.priceList) + (r.newPriceList ? ' (รอบใหม่)' : '') : '') + (r.skipped ? ', ข้าม ' + r.skipped + ' (มีอยู่แล้ว)' : '') +
           (r.errors && r.errors.length ? '<br><span style="color:var(--danger)">' + r.errors.slice(0, 10).map(esc).join('<br>') + (r.errors.length > 10 ? '<br>…' : '') + '</span>' : '') + '</div>';
         S.mon = null; S.ap.rows = null;
       }).catch(fail).then(function () { btn.disabled = false; btn.textContent = 'นำเข้า'; });

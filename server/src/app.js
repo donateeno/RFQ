@@ -63,9 +63,9 @@ function createApp(deps) {
   async function sessionUser(req) {
     const email = req.session && req.session.email;
     if (!email) return null;
-    const u = (await db.query('select email, name, role, active from users where email = $1', [email])).rows[0];
+    const u = (await db.query('select email, name, role, active, can_view_cost from users where email = $1', [email])).rows[0];
     if (!u || !u.active) { req.session = null; return null; }
-    return u;
+    return { email: u.email, name: u.name, role: u.role, canSeeCost: u.can_view_cost === true };
   }
 
   async function signIn(req, email, name) {
@@ -140,7 +140,11 @@ function createApp(deps) {
   });
   integration.post('/import/:type', async (req, res) => {
     try {
-      const out = await importData(db, { type: req.params.type, values: req.body && req.body.values, brand: req.query.brand, group: req.query.group, today: service.todayIso(cfg.timezone) });
+      const out = await importData(db, {
+        type: req.params.type, values: req.body && req.body.values, brand: req.query.brand, group: req.query.group,
+        today: service.todayIso(cfg.timezone), user: 'n8n',
+        priceList: req.query.priceList ? { name: String(req.query.priceList), effectiveFrom: req.query.effectiveFrom } : null
+      });
       await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT', $1)`, [JSON.stringify({ type: req.params.type, imported: out.imported })]);
       res.json({ ok: true, data: out });
     } catch (e) { sendError(res, e, logger); }

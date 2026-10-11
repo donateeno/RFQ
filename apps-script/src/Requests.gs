@@ -39,7 +39,7 @@ function rowToView_(r, user, today) {
     flags: String(r.Flags || ''),
     source: String(r.Source || '')
   };
-  if (user.canApprove) {
+  if (user.canSeeCost) {
     v.cost = toNumber_(r.Cost);
     v.netIncVat = toNumber_(r.NetIncVat);
     v.netExVat = toNumber_(r.NetExVat);
@@ -113,7 +113,7 @@ function priceCheck(payload) {
     indicator: p.calc.indicator,
     flags: p.flags
   };
-  if (user.canApprove) {
+  if (user.canSeeCost) {
     out.cost = p.calc.cost;
     out.netIncVat = p.calc.netIncVat;
     out.netExVat = p.calc.netExVat;

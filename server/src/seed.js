@@ -98,6 +98,10 @@ async function seed(pool, cfg, groups) {
     for (const email of cfg.bootstrapSupervisors) {
       await c.query(`insert into users (email, name, role) values ($1, $2, 'SUPERVISOR') on conflict (email) do nothing`, [email, email.split('@')[0]]);
     }
+    for (const email of cfg.costViewers) {
+      await c.query(`insert into users (email, name) values ($1, $2) on conflict (email) do nothing`, [email, email.split('@')[0]]);
+    }
+    await c.query('update users set can_view_cost = (email = any($1::text[]))', [cfg.costViewers]);
   });
 }
 

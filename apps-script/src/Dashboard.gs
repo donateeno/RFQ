@@ -16,6 +16,7 @@ function getDashboard(filter) {
   });
 
   function avgMu(rows) {
+    if (!user.canSeeCost) return null;
     var mus = rows.map(function (r) { return toNumber_(r.MU); }).filter(function (m) { return m !== null && m > -1; });
     if (!mus.length) return null;
     return round_(mus.reduce(function (a, b) { return a + b; }, 0) / mus.length, 4);

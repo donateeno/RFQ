@@ -17,6 +17,8 @@ function load(env = process.env) {
     allowedDomain: (env.ALLOWED_DOMAIN || 'eve.co.th').toLowerCase(),
     bootstrapAdmins: list(env.BOOTSTRAP_ADMINS),
     bootstrapSupervisors: list(env.BOOTSTRAP_SUPERVISORS),
+    // The only people who may see cost, gain and exact %MU. Set on the server only — not editable in the app.
+    costViewers: list(env.COST_VIEWERS),
     integrationToken: env.INTEGRATION_TOKEN || '',
     notifyWebhookUrl: env.NOTIFY_WEBHOOK_URL || '',
     devLogin: !production && env.DEV_LOGIN === '1',

@@ -52,7 +52,7 @@ function notifySubmitted_(rows, user, channel) {
       (first.Project ? '<br>โครงการ: ' + esc_(first.Project) : '') +
       (first.Note ? '<br>หมายเหตุ: ' + esc_(first.Note) : '') +
       '<br>ช่วงราคา: ' + fmtDate_(first.StartDate) + ' ถึง ' + fmtDate_(first.EndDate) + '</p>' +
-      emailTable_(rows, true) +
+      emailTable_(rows, false) +
       (url ? '<p><a href="' + url + '#approvals">เปิดหน้ารออนุมัติ</a></p>' : '');
     MailApp.sendEmail({
       to: to.join(','),

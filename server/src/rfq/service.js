@@ -2,11 +2,14 @@
 /**
  * RFQ business logic. Every exported function takes ctx = {db, cfg, user, notify} first and is
  * reachable from the browser through the whitelisted RPC route, so each one checks the role itself.
- * Cost/gain/%MU are only ever returned to SUPERVISOR/ADMIN.
+ *
+ * Visibility:  SALES       indicator only
+ *              SUPERVISOR  + net prices and the MU band (e.g. "20–25%"), never cost/gain/exact %MU
+ *              cost viewer + cost, gain, exact %MU   (users.can_view_cost, set from COST_VIEWERS env only)
  */
-const { calculate, resolveDiscounts, round, INDICATOR, UserError } = require('../pricing');
+const { calculate, resolveDiscounts, round, muBand, INDICATOR, UserError } = require('../pricing');
 const { tx } = require('../db');
-const { getSettings, getCatalog, getChannel, lookupItem, landedFromRow } = require('./catalog');
+const { getSettings, getCatalog, getChannel, lookupItem, landedFromRow, priceContext } = require('./catalog');
 const { importData, parseCsv } = require('./importers');
 const notifyMsg = require('./notifications');
 
@@ -49,8 +52,8 @@ function pad(n, w) {
   return String(n).padStart(w, '0');
 }
 
-async function prepareLine(db, group, channel, line, settings) {
-  const item = await lookupItem(db, group, channel, line.productKey);
+async function prepareLine(db, group, channel, line, settings, date) {
+  const item = await lookupItem(db, group, channel, line.productKey, date);
   const special = num(line.specialPrice);
   if (!(special > 0)) throw new UserError('กรุณาใส่ราคาพิเศษ (มากกว่า 0) สำหรับ ' + (str(line.productKey) || 'สินค้า'));
   if (special > 100000000) throw new UserError('ราคาพิเศษสูงผิดปกติ');
@@ -62,10 +65,11 @@ async function prepareLine(db, group, channel, line, settings) {
   });
   const flags = [];
   if (!item) flags.push('ไม่พบในฐานข้อมูลต้นทุน');
+  else if (item.missing && item.missing.length) flags.push('สินค้าในเซ็ตไม่อยู่ในรอบราคาปัจจุบัน: ' + item.missing.join(', '));
   else if (!(item.cost > 0)) flags.push('ไม่มีต้นทุน');
   if (normal > 0 && special > normal) flags.push('ราคาพิเศษสูงกว่าราคาปกติ');
   return {
-    found: !!item,
+    found: !!item, item,
     productKey: item ? item.key : str(line.productKey, 200),
     productName: item ? item.name : str(line.productKey, 200),
     normalPrice: normal, specialPrice: special, discounts, calc, flags
@@ -77,23 +81,59 @@ function displayStatus(r, today) {
   return r.status;
 }
 
-function toView(r, user, today) {
-  const v = {
-    id: r.id, batch: r.batch_id || '', groupId: r.group_id, channel: r.channel_id, costSource: r.cost_source,
-    customer: r.customer, project: r.project, note: r.note,
-    productKey: r.product_key, productName: r.product_name, qty: r.qty,
-    normalPrice: r.normal_price, specialPrice: r.special_price,
-    discounts: r.discounts || [], discountLabels: r.discount_labels || [],
-    indicator: r.indicator, status: r.status, displayStatus: displayStatus(r, today),
-    startDate: r.start_date || '', endDate: r.end_date || '',
-    requester: r.requester, requestedAt: r.requested_at ? r.requested_at.toISOString() : '',
-    decidedBy: r.decided_by || '', decidedAt: r.decided_at ? r.decided_at.toISOString() : '',
-    comment: r.decision_comment || '', flags: (r.flags || []).join('; '), source: r.source
+const canSeeCost = (user) => user.canSeeCost === true;
+
+/**
+ * Returns a row → browser view function for this user. Loads group rules (for MU bands) and the
+ * current price lists (to mark approvals made on an older list) once per call.
+ */
+async function makeView(ctx) {
+  const { user } = ctx;
+  const today = todayIso(ctx.cfg.timezone);
+  const catalog = await getCatalog(ctx.db, true);
+  const rules = Object.fromEntries(catalog.map((g) => [g.id, g.indicatorRules]));
+  const pc = await priceContext(ctx.db, today);
+  const listNames = Object.fromEntries((await ctx.db.query('select id, name from price_lists')).rows.map((l) => [l.id, l.name]));
+  return function view(r) {
+    const current = r.brand && pc[r.brand] && pc[r.brand].current;
+    const v = {
+      id: r.id, batch: r.batch_id || '', groupId: r.group_id, channel: r.channel_id, costSource: r.cost_source,
+      customer: r.customer, project: r.project, note: r.note,
+      productKey: r.product_key, productName: r.product_name, qty: r.qty, isBundle: !!r.bundle_id,
+      normalPrice: r.normal_price, specialPrice: r.special_price,
+      discounts: r.discounts || [], discountLabels: r.discount_labels || [],
+      indicator: r.indicator, status: r.status, displayStatus: displayStatus(r, today),
+      startDate: r.start_date || '', endDate: r.end_date || '',
+      priceList: r.price_list_id ? listNames[r.price_list_id] || '' : '',
+      oldPriceList: !!(r.price_list_id && current && current.id !== r.price_list_id),
+      requester: r.requester, requestedAt: r.requested_at ? r.requested_at.toISOString() : '',
+      decidedBy: r.decided_by || '', decidedAt: r.decided_at ? r.decided_at.toISOString() : '',
+      comment: r.decision_comment || '', flags: (r.flags || []).join('; '), source: r.source
+    };
+    if (user.role !== 'SALES') Object.assign(v, { netIncVat: r.net_inc_vat, netExVat: r.net_ex_vat, muBand: muBand(r.mu, rules[r.group_id]) });
+    if (canSeeCost(user)) Object.assign(v, { cost: r.cost, gain: r.gain, mu: r.mu });
+    return v;
   };
-  if (user.role === 'SUPERVISOR' || user.role === 'ADMIN') {
-    Object.assign(v, { cost: r.cost, netIncVat: r.net_inc_vat, netExVat: r.net_ex_vat, gain: r.gain, mu: r.mu });
-  }
-  return v;
+}
+
+/**
+ * A pending request priced on an older price list, re-priced with today's list.
+ * @return {object|null} new snapshot columns + priceList name, or null when nothing changed
+ */
+async function reprice(db, row, groupsById, settings, today) {
+  if (row.cost_source !== 'PRODUCT' || !row.price_list_id) return null;
+  const group = groupsById[row.group_id];
+  const channel = group && group.channels.find((c) => c.id === row.channel_id);
+  if (!channel) return null;
+  const item = await lookupItem(db, group, channel, row.product_key, today);
+  if (!item || !item.priceList || item.priceList.id === row.price_list_id) return null;
+  const calc = calculate({ formula: channel.formula, normalPrice: item.normalPrice, specialPrice: row.special_price, discounts: row.discounts,
+    cost: item.cost, vatRate: settings.VAT_RATE, rules: group.indicatorRules });
+  return { priceListId: item.priceList.id, priceList: item.priceList.name, normalPrice: item.normalPrice, calc, rules: group.indicatorRules };
+}
+
+async function groupsWithInactive(db) {
+  return Object.fromEntries((await getCatalog(db, true)).map((g) => [g.id, g]));
 }
 
 /** Builds WHERE fragments for the shared list filters. */
@@ -123,30 +163,67 @@ async function log(db, email, action, ids, detail) {
 
 async function getBootstrap(ctx) {
   const { db, user, cfg } = ctx;
+  const today = todayIso(cfg.timezone);
   const settings = await getSettings(db);
   const catalog = await getCatalog(db);
-  const products = (await db.query('select brand as b, key as k, name as n, normal_price as p from products order by brand, key')).rows;
+  const pc = await priceContext(db, today);
+
+  // Products of each brand's current price list, with "new" and "upcoming price" markers. Never cost.
+  const products = [];
+  const priceByKey = {};
+  const priceLists = {};
+  for (const brand of Object.keys(pc)) {
+    const { current, previous, upcoming } = pc[brand];
+    priceLists[brand] = { current, upcoming };
+    if (!current) continue;
+    const prevKeys = previous ? new Set((await db.query('select key_norm from products where price_list_id = $1 and brand = $2', [previous.id, brand])).rows.map((r) => r.key_norm)) : null;
+    const up = upcoming ? new Map((await db.query('select key_norm, normal_price from products where price_list_id = $1 and brand = $2', [upcoming.id, brand])).rows.map((r) => [r.key_norm, r.normal_price])) : null;
+    const rows = (await db.query('select key, key_norm, name, normal_price from products where price_list_id = $1 and brand = $2 order by key', [current.id, brand])).rows;
+    rows.forEach((r) => {
+      const e = { b: brand, k: r.key, n: r.name, p: r.normal_price };
+      if (prevKeys && !prevKeys.has(r.key_norm)) e.nw = 1;
+      if (up) {
+        if (!up.has(r.key_norm)) e.ux = 1;
+        else if (up.get(r.key_norm) !== r.normal_price) e.up = up.get(r.key_norm);
+      }
+      priceByKey[brand + '|' + r.key_norm] = r.normal_price;
+      products.push(e);
+    });
+  }
+  const bundles = (await db.query(
+    `select b.id, b.brand, b.name, b.label, b.created_by, json_agg(json_build_object('k', i.product_key, 'q', i.qty) order by i.position) as items
+     from bundles b join bundle_items i on i.bundle_id = b.id where b.active group by b.id order by b.name`)).rows
+    .map((b) => bundleView(b, priceByKey));
+
   const projects = (await db.query('select group_id as g, project_key as k, customer, description, normal_price as p from project_costs order by project_key')).rows
     .map((r) => ({ g: r.g, k: r.k, n: [r.customer, r.description].filter(Boolean).join(' · '), p: r.p }));
-  const landedRows = (await db.query('select * from landed_items order by item_code')).rows;
-  const landed = landedRows.map((r) => {
+  const landed = (await db.query('select * from landed_items order by item_code')).rows.map((r) => {
     const g = catalog.find((x) => x.id === r.group_id);
     const lc = g ? landedFromRow(r, g.params) : null;
     return { g: r.group_id, k: r.item_code, n: r.description, p: lc ? lc.suggestedPrice : null };
   });
   const customers = (await db.query(`select distinct customer from requests where customer <> '' order by customer limit 3000`)).rows.map((r) => r.customer);
   const out = {
-    user: { email: user.email, name: user.name, role: user.role, canApprove: user.role !== 'SALES', isAdmin: user.role === 'ADMIN' },
+    user: { email: user.email, name: user.name, role: user.role, canApprove: user.role !== 'SALES', isAdmin: user.role === 'ADMIN', canSeeCost: canSeeCost(user) },
     groups: catalog.map((g) => ({ id: g.id, name: g.name, description: g.description, costSource: g.costSource, channels: g.channels })),
     settings: { defaultValidityDays: settings.DEFAULT_VALIDITY_DAYS, maxValidityDays: settings.MAX_VALIDITY_DAYS },
-    products, projects, landed, customers,
-    today: todayIso(cfg.timezone)
+    products, bundles, projects, landed, customers, priceLists, today
   };
   if (out.user.canApprove) {
-    out.groups.forEach((g) => { g.indicatorRules = catalog.find((x) => x.id === g.id).indicatorRules; });
     out.pendingCount = Number((await db.query(`select count(*) from requests where status = 'Pending'`)).rows[0].count);
   }
   return out;
+}
+
+/** Bundle for the browser: components and summed normal price from the current list (never cost). */
+function bundleView(b, priceByKey) {
+  let p = 0;
+  for (const it of b.items) {
+    const price = priceByKey[b.brand + '|' + String(it.k).trim().toUpperCase()];
+    if (price === undefined || price === null) { p = null; break; }
+    p += price * it.q;
+  }
+  return { id: b.id, b: b.brand, k: b.name, n: b.label || 'ชุดเซ็ต', p, items: b.items, by: b.created_by };
 }
 
 // ---------------------------------------------------------------- price check & submit
@@ -155,12 +232,15 @@ async function priceCheck(ctx, payload) {
   const { db, user } = ctx;
   const settings = await getSettings(db);
   const { group, channel } = await getChannel(db, payload && payload.channelId);
-  const p = await prepareLine(db, group, channel, payload || {}, settings);
+  const p = await prepareLine(db, group, channel, payload || {}, settings, todayIso(ctx.cfg.timezone));
+  const it = p.item || {};
   const out = {
     found: p.found, productKey: p.productKey, productName: p.productName, normalPrice: p.normalPrice,
-    discounts: p.discounts, indicator: p.calc.indicator, flags: p.flags
+    discounts: p.discounts, indicator: p.calc.indicator, flags: p.flags,
+    priceList: it.priceList || null, upcoming: it.upcoming || null, isNew: !!it.isNew, isBundle: !!it.bundleId
   };
-  if (user.role !== 'SALES') Object.assign(out, { cost: p.calc.cost, netIncVat: p.calc.netIncVat, netExVat: p.calc.netExVat, gain: p.calc.gain, mu: p.calc.mu });
+  if (user.role !== 'SALES') Object.assign(out, { netIncVat: p.calc.netIncVat, netExVat: p.calc.netExVat, muBand: muBand(p.calc.mu, group.indicatorRules) });
+  if (canSeeCost(user)) Object.assign(out, { cost: p.calc.cost, gain: p.calc.gain, mu: p.calc.mu });
   return out;
 }
 
@@ -188,7 +268,7 @@ async function submitRequest(ctx, payload) {
     const qty = num(l && l.qty);
     if (!(qty >= 1) || !Number.isInteger(qty) || qty > 1000000) throw new UserError(`รายการที่ ${i + 1}: จำนวนต้องเป็นเลขจำนวนเต็ม ≥ 1`);
     if (!str(l.productKey)) throw new UserError(`รายการที่ ${i + 1}: กรุณาเลือก${channel.keyLabel || 'สินค้า'}`);
-    const p = await prepareLine(db, group, channel, l, settings);
+    const p = await prepareLine(db, group, channel, l, settings, today);
     p.qty = qty;
     prepared.push(p);
   }
@@ -204,12 +284,13 @@ async function submitRequest(ctx, payload) {
       const r = (await c.query(
         `insert into requests (id, batch_id, group_id, channel_id, cost_source, brand, customer, project, note, product_key, product_name, qty,
            normal_price, special_price, discounts, discount_labels, cost, net_inc_vat, net_ex_vat, gain, mu, indicator, status,
-           start_date, end_date, requester, requested_at, flags, source)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'Pending',$23,$24,$25,now(),$26,'APP')
+           start_date, end_date, requester, requested_at, flags, source, price_list_id, bundle_id)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'Pending',$23,$24,$25,now(),$26,'APP',$27,$28)
          returning *`,
         [id, batchId, group.id, channel.id, group.costSource, channel.brand, customer, str(payload.project, 200), str(payload.note, 500),
           p.productKey, p.productName, p.qty, p.normalPrice, p.specialPrice, JSON.stringify(p.discounts), JSON.stringify(labels),
-          p.calc.cost, p.calc.netIncVat, p.calc.netExVat, p.calc.gain, p.calc.mu, p.calc.indicator, start, end, user.email, p.flags])).rows[0];
+          p.calc.cost, p.calc.netIncVat, p.calc.netExVat, p.calc.gain, p.calc.mu, p.calc.indicator, start, end, user.email, p.flags,
+          p.item && p.item.priceList ? p.item.priceList.id : null, p.item && p.item.bundleId ? p.item.bundleId : null])).rows[0];
       rows.push(r);
     }
     await log(c, user.email, 'SUBMIT', rows.map((r) => r.id), { customer, channel: channel.id });
@@ -218,7 +299,8 @@ async function submitRequest(ctx, payload) {
 
   const approvers = await approverEmails(db, settings);
   ctx.notify(notifyMsg.submitted(cfg, created, user, group, channel, approvers.filter((e) => e !== user.email)));
-  return { batchId, lines: created.map((r) => toView(r, user, today)) };
+  const view = await makeView(ctx);
+  return { batchId, lines: created.map(view) };
 }
 
 async function approverEmails(db, settings) {
@@ -236,7 +318,7 @@ async function listMyRequests(ctx, filter) {
   const params = [ctx.user.email];
   const where = ['lower(requester) = $1'].concat(buildFilter(filter || {}, today, params));
   const rows = (await ctx.db.query(`select * from requests where ${where.join(' and ')} order by requested_at desc nulls last, id desc limit 300`, params)).rows;
-  return rows.map((r) => toView(r, ctx.user, today));
+  return rows.map(await makeView(ctx));
 }
 
 async function listRequests(ctx, filter) {
@@ -248,7 +330,23 @@ async function listRequests(ctx, filter) {
   const limit = Math.min(Number(filter.limit) || 500, 3000);
   const rows = (await ctx.db.query(`select * from requests ${where.length ? 'where ' + where.join(' and ') : ''}
     order by requested_at desc nulls last, id desc limit ${limit}`, params)).rows;
-  return rows.map((r) => toView(r, ctx.user, today));
+  const view = await makeView(ctx);
+  const settings = await getSettings(ctx.db);
+  const groups = await groupsWithInactive(ctx.db);
+  const out = [];
+  for (const r of rows) {
+    const v = view(r);
+    // Pending requests made on an older price list: show what approving today would mean.
+    if (r.status === STATUS.PENDING && v.oldPriceList) {
+      const rp = await reprice(ctx.db, r, groups, settings, today);
+      if (rp) {
+        v.repriced = { priceList: rp.priceList, normalPrice: rp.normalPrice, indicator: rp.calc.indicator, muBand: muBand(rp.calc.mu, rp.rules) };
+        if (canSeeCost(ctx.user)) Object.assign(v.repriced, { cost: rp.calc.cost, mu: rp.calc.mu });
+      }
+    }
+    out.push(v);
+  }
+  return out;
 }
 
 async function searchApprovedPrices(ctx, filter) {
@@ -258,7 +356,7 @@ async function searchApprovedPrices(ctx, filter) {
   const where = [`status = 'Approved'`].concat(buildFilter({ q: filter.q, group: filter.group, channel: filter.channel }, today, params));
   if (!filter.includeExpired) where.push('(end_date is null or end_date >= $1) and (start_date is null or start_date <= $1)');
   const rows = (await ctx.db.query(`select * from requests where ${where.join(' and ')} order by requested_at desc nulls last, id desc limit 300`, params)).rows;
-  return rows.map((r) => toView(r, ctx.user, today));
+  return rows.map(await makeView(ctx));
 }
 
 async function getLineContext(ctx, id) {
@@ -271,7 +369,8 @@ async function getLineContext(ctx, id) {
      order by requested_at desc nulls last limit 10`, [row.id, row.cost_source, row.brand, row.product_key])).rows;
   const sameCustomer = row.customer ? (await ctx.db.query(
     `select * from requests where id <> $1 and lower(customer) = lower($2) order by requested_at desc nulls last limit 10`, [row.id, row.customer])).rows : [];
-  return { sameProduct: sameProduct.map((r) => toView(r, ctx.user, today)), sameCustomer: sameCustomer.map((r) => toView(r, ctx.user, today)) };
+  const view = await makeView(ctx);
+  return { sameProduct: sameProduct.map(view), sameCustomer: sameCustomer.map(view) };
 }
 
 // ---------------------------------------------------------------- decisions
@@ -287,19 +386,32 @@ async function decideRequests(ctx, payload) {
   if (!ids.length) throw new UserError('กรุณาเลือกรายการ');
   const today = todayIso(ctx.cfg.timezone);
   // Supervisors may not decide their own requests; admins may.
-  const ownGuard = user.role === 'ADMIN' ? '' : 'and lower(requester) <> $5';
-  const params = [decision, user.email, comment, ids];
-  if (ownGuard) params.push(user.email);
+  const ownGuard = user.role === 'ADMIN' ? '' : 'and lower(requester) <> $2';
+  const settings = await getSettings(ctx.db);
+  const groups = await groupsWithInactive(ctx.db);
   const changed = await tx(ctx.db, async (c) => {
-    const rows = (await c.query(
-      `update requests set status = $1, decided_by = $2, decided_at = now(), decision_comment = $3, updated_at = now()
-       where id = any($4) and status = 'Pending' ${ownGuard} returning *`, params)).rows;
+    const pending = (await c.query(`select * from requests where id = any($1) and status = 'Pending' ${ownGuard} for update`,
+      ownGuard ? [ids, user.email] : [ids])).rows;
+    const rows = [];
+    for (const r of pending) {
+      // Approving after a new price list took effect: the snapshot follows today's list.
+      const rp = decision === STATUS.APPROVED ? await reprice(c, r, groups, settings, today) : null;
+      const snap = rp
+        ? [rp.priceListId, rp.normalPrice, rp.calc.cost, rp.calc.netIncVat, rp.calc.netExVat, rp.calc.gain, rp.calc.mu, rp.calc.indicator,
+          (r.flags || []).concat([`คิดใหม่ตามราคารอบ ${rp.priceList} ณ วันอนุมัติ`])]
+        : [r.price_list_id, r.normal_price, r.cost, r.net_inc_vat, r.net_ex_vat, r.gain, r.mu, r.indicator, r.flags];
+      rows.push((await c.query(
+        `update requests set status = $2, decided_by = $3, decided_at = now(), decision_comment = $4, updated_at = now(),
+           price_list_id = $5, normal_price = $6, cost = $7, net_inc_vat = $8, net_ex_vat = $9, gain = $10, mu = $11, indicator = $12, flags = $13
+         where id = $1 returning *`, [r.id, decision, user.email, comment].concat(snap))).rows[0]);
+    }
     await log(c, user.email, decision === STATUS.APPROVED ? 'APPROVE' : 'REJECT', rows.map((r) => r.id), { comment });
     return rows;
   });
   const done = changed.map((r) => r.id);
   notifyMsg.decided(ctx.cfg, changed, user).forEach((m) => ctx.notify(m));
-  return { updated: done, skipped: ids.filter((id) => !done.includes(id)), lines: changed.map((r) => toView(r, user, today)) };
+  const view = await makeView(ctx);
+  return { updated: done, skipped: ids.filter((id) => !done.includes(id)), lines: changed.map(view) };
 }
 
 async function cancelMyRequests(ctx, ids) {
@@ -333,7 +445,9 @@ async function getDashboard(ctx, filter) {
   const inRange = all.filter((r) => r.req_day && r.req_day >= from && r.req_day <= to);
   const approved = inRange.filter((r) => r.status === STATUS.APPROVED);
   const low = (r) => r.indicator === 'VERY LOW' || r.indicator === 'ขาดทุน';
+  const showMu = canSeeCost(ctx.user);
   const avgMu = (rows) => {
+    if (!showMu) return null; // an average over few rows would reveal a single item's margin
     const m = rows.map((r) => r.mu).filter((x) => x !== null && x > -1);
     return m.length ? round(m.reduce((a, b) => a + b, 0) / m.length, 4) : null;
   };
@@ -359,9 +473,9 @@ async function getDashboard(ctx, filter) {
   const expiringRows = all.filter((r) => r.status === STATUS.APPROVED && r.end_date && r.end_date >= today && r.end_date <= soon)
     .sort((a, b) => (a.end_date < b.end_date ? -1 : 1));
   const riskyRows = approved.filter(low).sort((a, b) => b.requested_at - a.requested_at);
-  const view = (r) => toView(r, ctx.user, today);
+  const view = await makeView(ctx);
   return {
-    from, to,
+    from, to, showMu,
     kpis: {
       total: inRange.length,
       pendingNow: all.filter((r) => r.status === STATUS.PENDING).length,
@@ -395,12 +509,14 @@ async function getAdminInfo(ctx) {
   const settings = await q('select key, value, description from settings order by key');
   return {
     settings: settings.map((r) => ({ key: r.key, value: r.value, description: r.description })),
-    users: (await q('select email, name, role, active, last_login_at from users order by role desc, email')).map((u) => ({
-      email: u.email, name: u.name, role: u.role, active: u.active, lastLoginAt: u.last_login_at ? u.last_login_at.toISOString() : ''
+    users: (await q('select email, name, role, active, can_view_cost, last_login_at from users order by role desc, email')).map((u) => ({
+      email: u.email, name: u.name, role: u.role, active: u.active, canViewCost: u.can_view_cost, lastLoginAt: u.last_login_at ? u.last_login_at.toISOString() : ''
     })),
+    priceLists: await priceListSummary(db, todayIso(ctx.cfg.timezone)),
     catalog: await getCatalog(db, false),
     counts: {
       products: Number((await q('select count(*) from products'))[0].count),
+      bundles: Number((await q('select count(*) from bundles where active'))[0].count),
       productsWithoutCost: Number((await q('select count(*) from products where cost is null or cost <= 0'))[0].count),
       productsUpdatedAt: ((await q('select max(updated_at) as m from products'))[0].m || '').toString(),
       projectCosts: Number((await q('select count(*) from project_costs'))[0].count),
@@ -464,16 +580,115 @@ async function importCsv(ctx, payload) {
   payload = payload || {};
   if (String(payload.csv || '').length > 15 * 1024 * 1024) throw new UserError('ไฟล์ใหญ่เกิน 15MB');
   const values = parseCsv(String(payload.csv || ''));
-  const res = await importData(ctx.db, { type: payload.type, values, brand: payload.brand, group: payload.group, sourceName: payload.fileName, today: todayIso(ctx.cfg.timezone) });
+  const res = await importData(ctx.db, {
+    type: payload.type, values, brand: payload.brand, group: payload.group, today: todayIso(ctx.cfg.timezone), user: user.email,
+    priceList: payload.priceList ? { name: payload.priceList.name, effectiveFrom: payload.priceList.effectiveFrom } : null
+  });
   await log(ctx.db, user.email, 'IMPORT', [], { type: payload.type, file: payload.fileName, ...res, errors: (res.errors || []).slice(0, 20) });
   return res;
+}
+
+// ---------------------------------------------------------------- price lists (admin)
+
+async function priceListSummary(db, today) {
+  const lists = (await db.query(`select l.id, l.name, l.effective_from::text as effective_from, l.note, l.created_by,
+      (select count(*) from requests r where r.price_list_id = l.id)::int as requests
+    from price_lists l order by l.effective_from desc, l.id desc`)).rows;
+  const counts = (await db.query('select price_list_id, brand, count(*)::int as n from products group by 1, 2')).rows;
+  const pc = await priceContext(db, today);
+  return lists.map((l) => {
+    const brands = counts.filter((c) => c.price_list_id === l.id).map((c) => {
+      const b = pc[c.brand] || {};
+      const status = b.current && b.current.id === l.id ? 'current' : (l.effective_from > today ? 'upcoming' : 'past');
+      return { brand: c.brand, products: c.n, status };
+    });
+    return { id: l.id, name: l.name, effectiveFrom: l.effective_from, note: l.note, createdBy: l.created_by, requests: l.requests, brands };
+  });
+}
+
+async function savePriceList(ctx, payload) {
+  const user = admin(ctx);
+  payload = payload || {};
+  if (!isIsoDate(payload.effectiveFrom)) throw new UserError('วันที่มีผลไม่ถูกต้อง');
+  const r = await ctx.db.query('update price_lists set effective_from = $2, note = $3 where id = $1', [Number(payload.id), payload.effectiveFrom, str(payload.note, 300)]);
+  if (!r.rowCount) throw new UserError('ไม่พบรอบราคา', 404);
+  await log(ctx.db, user.email, 'SAVE_PRICE_LIST', [], payload);
+  return getAdminInfo(ctx);
+}
+
+/** Only an upcoming list that no request uses can be deleted (e.g. imported by mistake). */
+async function deletePriceList(ctx, id) {
+  const user = admin(ctx);
+  const today = todayIso(ctx.cfg.timezone);
+  const l = (await ctx.db.query('select *, effective_from::text as eff from price_lists where id = $1', [Number(id)])).rows[0];
+  if (!l) throw new UserError('ไม่พบรอบราคา', 404);
+  if (l.eff <= today) throw new UserError('ลบได้เฉพาะรอบราคาที่ยังไม่มีผล');
+  if ((await ctx.db.query('select 1 from requests where price_list_id = $1 limit 1', [l.id])).rowCount) throw new UserError('มีคำขอที่ใช้รอบราคานี้แล้ว');
+  await ctx.db.query('delete from price_lists where id = $1', [l.id]);
+  await log(ctx.db, user.email, 'DELETE_PRICE_LIST', [], { name: l.name });
+  return getAdminInfo(ctx);
+}
+
+// ---------------------------------------------------------------- bundles (DUMMY SET) — anyone can create, everyone can use
+
+/**
+ * @param {{brand:string, label?:string, items:{productKey:string, qty?:number}[]}} payload
+ * Name follows the sheet's DUMMY SET: component keys joined with " + " (" ×n" when qty > 1).
+ */
+async function createBundle(ctx, payload) {
+  const { db, user } = ctx;
+  payload = payload || {};
+  const today = todayIso(ctx.cfg.timezone);
+  const brand = String(payload.brand || '').toUpperCase();
+  const pc = (await priceContext(db, today))[brand];
+  if (!pc || !pc.current) throw new UserError('ไม่พบรายการราคาของแบรนด์ ' + brand);
+  const items = (Array.isArray(payload.items) ? payload.items : []).filter((i) => i && str(i.productKey));
+  if (items.length < 2 || items.length > 5) throw new UserError('ชุดเซ็ตต้องมีสินค้า 2–5 รายการ');
+  const resolved = [];
+  for (const [i, it] of items.entries()) {
+    const qty = it.qty === undefined || it.qty === '' ? 1 : num(it.qty);
+    if (!Number.isInteger(qty) || qty < 1 || qty > 99) throw new UserError(`รายการที่ ${i + 1}: จำนวนต้องเป็น 1–99`);
+    const p = (await db.query('select key from products where price_list_id = $1 and brand = $2 and key_norm = upper(btrim($3))', [pc.current.id, brand, str(it.productKey, 200)])).rows[0];
+    if (!p) throw new UserError(`ไม่พบสินค้า "${str(it.productKey, 80)}" ในรอบราคาปัจจุบัน`);
+    resolved.push({ key: p.key, qty });
+  }
+  const name = resolved.map((r) => (r.qty > 1 ? `${r.key} ×${r.qty}` : r.key)).join(' + ');
+  if ((await db.query('select 1 from products where price_list_id = $1 and brand = $2 and key_norm = upper($3)', [pc.current.id, brand, name])).rowCount) {
+    throw new UserError('ชื่อเซ็ตซ้ำกับสินค้าที่มีอยู่');
+  }
+  const id = await tx(db, async (c) => {
+    if ((await c.query('select 1 from bundles where active and brand = $1 and name_norm = upper($2)', [brand, name])).rowCount) {
+      throw new UserError('มีชุดเซ็ตนี้อยู่แล้ว — เลือกใช้จากรายการได้เลย');
+    }
+    const b = (await c.query('insert into bundles (brand, name, label, created_by) values ($1, $2, $3, $4) returning id', [brand, name, str(payload.label, 120), user.email])).rows[0];
+    for (const [i, r] of resolved.entries()) await c.query('insert into bundle_items (bundle_id, position, product_key, qty) values ($1, $2, $3, $4)', [b.id, i, r.key, r.qty]);
+    await log(c, user.email, 'CREATE_BUNDLE', [], { brand, name });
+    return b.id;
+  });
+  const row = (await db.query(`select b.id, b.brand, b.name, b.label, b.created_by, json_agg(json_build_object('k', i.product_key, 'q', i.qty) order by i.position) as items
+     from bundles b join bundle_items i on i.bundle_id = b.id where b.id = $1 group by b.id`, [id])).rows[0];
+  const prices = Object.fromEntries((await db.query('select key_norm, normal_price from products where price_list_id = $1 and brand = $2', [pc.current.id, brand])).rows
+    .map((r) => [brand + '|' + r.key_norm, r.normal_price]));
+  return bundleView(row, prices);
+}
+
+/** Creator or admin. Requests that used the bundle keep their snapshot. */
+async function deleteBundle(ctx, id) {
+  const { db, user } = ctx;
+  const b = (await db.query('select * from bundles where id = $1 and active', [Number(id)])).rows[0];
+  if (!b) throw new UserError('ไม่พบชุดเซ็ต', 404);
+  if (b.created_by !== user.email && user.role !== 'ADMIN') throw new UserError('ลบได้เฉพาะเซ็ตที่คุณสร้าง', 403);
+  await db.query('update bundles set active = false where id = $1', [b.id]);
+  await log(db, user.email, 'DELETE_BUNDLE', [], { name: b.name });
+  return { ok: true };
 }
 
 module.exports = {
   // RPC-callable
   rpc: {
     getBootstrap, priceCheck, submitRequest, listMyRequests, listRequests, searchApprovedPrices, getLineContext,
-    decideRequests, cancelMyRequests, getDashboard, getAdminInfo, saveSettings, saveUser, importCsv
+    decideRequests, cancelMyRequests, getDashboard, getAdminInfo, saveSettings, saveUser, importCsv,
+    savePriceList, deletePriceList, createBundle, deleteBundle
   },
   // internal
   todayIso, STATUS

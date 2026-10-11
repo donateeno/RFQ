@@ -124,15 +124,17 @@ test('priceCheck: sales see the indicator only, supervisors see the numbers', ()
   assert.equal(sales.productKey, 'HC-DEMO-90');
   ['cost', 'gain', 'mu', 'netExVat', 'netIncVat'].forEach((k) => assert.ok(!(k in sales), k + ' leaked'));
   const sup = env.call(SUP, 'priceCheck', payload);
-  assert.equal(sup.cost, 7100);
-  assert.equal(sup.mu, round4((16990 * 0.82 / 1.07 - 7100) / (16990 * 0.82 / 1.07)));
+  assert.ok(!('cost' in sup) && !('mu' in sup), 'supervisors do not see cost');
+  const adm = env.call(ADMIN, 'priceCheck', payload);
+  assert.equal(adm.cost, 7100);
+  assert.equal(adm.mu, round4((16990 * 0.82 / 1.07 - 7100) / (16990 * 0.82 / 1.07)));
 });
 
 function round4(n) { return Math.round(n * 10000) / 10000; }
 
 test('priceCheck: BT channel forces its fixed GP even if the browser sends another value', () => {
   const env = seed(createEnv());
-  const r = env.call(SUP, 'priceCheck', { channelId: 'BT_EVE', productKey: 'HC-DEMO-90', specialPrice: 16990, discounts: [0, 0, 0] });
+  const r = env.call(ADMIN, 'priceCheck', { channelId: 'BT_EVE', productKey: 'HC-DEMO-90', specialPrice: 16990, discounts: [0, 0, 0] });
   assert.deepEqual(r.discounts, [0.278304, 0, 0]);
   const net = (18990 * 0.721696 - (18990 - 16990)) / 1.07;
   assert.equal(r.mu, round4((net - 7100) / net));
@@ -255,7 +257,8 @@ test('lists: my requests are private, approved-price search hides expired ones, 
   assert.throws(() => env.call(SALES, 'listRequests', {}), /ไม่มีสิทธิ์/);
   const pending = env.call(SUP, 'listRequests', { status: 'Pending' });
   assert.ok(pending.length >= 2 && pending.every((r) => r.status === 'Pending'));
-  assert.ok('mu' in pending[0]);
+  assert.ok(!('mu' in pending[0]));
+  assert.ok('mu' in env.call(ADMIN, 'listRequests', { status: 'Pending' })[0]);
   const ctx = env.call(SUP, 'getLineContext', mine[0]);
   assert.ok(ctx.sameProduct.some((r) => r.id === 'GT.0001'));
   assert.ok(ctx.sameCustomer.some((r) => r.id === mine[1]));

@@ -41,6 +41,25 @@ function indicatorFor(mu, rules) {
 }
 
 /**
+ * The MU range an exact %MU falls in, from the group's own thresholds — e.g. "20–25%", "> 25%".
+ * Shown to supervisors instead of the exact figure, which would let them back out the cost.
+ */
+function muBand(mu, rules) {
+  if (mu === null || mu === undefined || !Number.isFinite(mu)) return '';
+  const pct = (v) => `${round(v * 100, 2)}%`;
+  let lower = null;
+  for (const r of rules || []) {
+    const v = r.below !== undefined ? r.below : r.upTo;
+    const hit = r.below !== undefined ? mu < v : mu <= v;
+    if (hit) return lower === null ? (r.below !== undefined ? `< ${pct(v)}` : `≤ ${pct(v)}`) : `${pct(lower)}–${pct(v)}`;
+    lower = v;
+  }
+  if (lower === null) return '';
+  const last = rules[rules.length - 1];
+  return last.below !== undefined ? `≥ ${pct(lower)}` : `> ${pct(lower)}`;
+}
+
+/**
  * @param {{formula, normalPrice, specialPrice, discounts:number[], cost, vatRate, rules}} p
  */
 function calculate(p) {
@@ -118,4 +137,4 @@ class UserError extends Error {
   }
 }
 
-module.exports = { INDICATOR, FORMULAS, COST_SOURCES, round, netIncVat, indicatorFor, calculate, landedCost, roundUpTo, resolveDiscounts, UserError };
+module.exports = { INDICATOR, FORMULAS, COST_SOURCES, round, netIncVat, indicatorFor, muBand, calculate, landedCost, roundUpTo, resolveDiscounts, UserError };

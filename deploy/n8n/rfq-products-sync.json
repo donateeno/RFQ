@@ -23,6 +23,28 @@
     },
     {
       "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_SPREADSHEET_ID_HERE/values/_ext_sheets!C3?valueRenderOption=FORMATTED_VALUE",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "9f1d2c1e-0000-4000-8000-000000000001",
+      "name": "Read price list name",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        120,
+        -160
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
         "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_SPREADSHEET_ID_HERE/values/_Cost%26Price?valueRenderOption=FORMATTED_VALUE",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "googleSheetsOAuth2Api",
@@ -46,7 +68,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://rfq.example.com/api/integrations/import/cost_price_sheet",
+        "url": "=https://rfq.example.com/api/integrations/import/cost_price_sheet?priceList={{ encodeURIComponent($('Read price list name').item.json.values[0][0]) }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
@@ -123,7 +145,7 @@
       "main": [
         [
           {
-            "node": "Read _Cost&Price",
+            "node": "Read price list name",
             "type": "main",
             "index": 0
           }
@@ -162,6 +184,17 @@
           }
         ]
       ]
+    },
+    "Read price list name": {
+      "main": [
+        [
+          {
+            "node": "Read _Cost&Price",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
@@ -175,5 +208,5 @@
   "active": false,
   "staticData": null,
   "versionId": "bab5c213-913a-49fc-8773-d5146e9401e2",
-  "_comment": "Reads the hidden _Cost&Price and _CalDummy tabs of the GT file (they keep IMPORTRANGE-ing the masters) and upserts them into the app. Add more pairs for Joseph Space: project_costs?group=JS, landed_items?group=JS_OVS."
+  "_comment": "Reads the period name (e.g. Apr26) from _ext_sheets!C3, then imports _Cost&Price into that price list (new name = new list effective today; set an earlier/later date in the app → ตั้งค่า → รอบราคา). _CalDummy rows become shared bundles."
 }

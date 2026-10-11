@@ -17,7 +17,7 @@ async function startApp() {
   await migrate(db);
   const cfg = load({
     NODE_ENV: 'test', DEV_LOGIN: '1', DATABASE_URL: DB_URL, GOOGLE_CLIENT_ID: 'test-client', INTEGRATION_TOKEN: 'test-token',
-    BOOTSTRAP_ADMINS: 'akrawat@eve.co.th', BOOTSTRAP_SUPERVISORS: 'pak.m@eve.co.th', APP_BASE_URL: 'https://rfq.example.com'
+    BOOTSTRAP_ADMINS: 'akrawat@eve.co.th, admin2@eve.co.th', BOOTSTRAP_SUPERVISORS: 'pak.m@eve.co.th', COST_VIEWERS: 'akrawat@eve.co.th', APP_BASE_URL: 'https://rfq.example.com'
   });
   await seed(db, cfg);
   const mail = [];
@@ -86,8 +86,8 @@ const MANUAL_CAL = [
 ];
 
 async function seedFixtures(db) {
-  const today = new Date().toISOString().slice(0, 10);
-  await importData(db, { type: 'cost_price_sheet', values: COST_PRICE, today });
+  const today = isoDay(0);
+  await importData(db, { type: 'cost_price_sheet', values: COST_PRICE, today, priceList: { name: 'APR26', effectiveFrom: isoDay(-60) } });
   await importData(db, { type: 'cal_dummy_sheet', values: CAL_DUMMY, today });
   await importData(db, { type: 'project_costs', values: PROJECT_COSTS, group: 'JS', today });
   await importData(db, { type: 'landed_items', values: MANUAL_CAL, group: 'JS_OVS', today });

@@ -65,6 +65,8 @@ for k in POSTGRES_PASSWORD SESSION_SECRET INTEGRATION_TOKEN; do sed -i "s/^$k=.*
 nano .env        # APP_DOMAIN, APP_BASE_URL, GOOGLE_CLIENT_ID, NOTIFY_WEBHOOK_URL, PROXY, TRAEFIK_*
 bash deploy.sh   # builds, starts, waits for /healthz
 ```
+`COST_VIEWERS` decides who can see cost, gain and exact %MU. It is only set here, on the server; nobody can grant it from inside the app.
+
 Open `https://rfq.<domain>` and sign in. Accounts listed in `BOOTSTRAP_ADMINS` / `BOOTSTRAP_SUPERVISORS` get their roles. Everyone else at eve.co.th joins as SALES automatically.
 
 Firewall: in **hPanel → VPS → Firewall**, allow only 22, 80 and 443. PostgreSQL is never published, and the app is bound to 127.0.0.1.
@@ -102,12 +104,13 @@ Import each file in **n8n → Workflows → Import from file**. Then set its cre
 |---|---|---|
 | `rfq-notify.json` | Header Auth "RFQ integration token" (`Authorization` = `Bearer <INTEGRATION_TOKEN>`), Gmail | Copy the webhook's **production URL** into `NOTIFY_WEBHOOK_URL` |
 | `rfq-products-sync.json` | Google Sheets OAuth2, the same Header Auth | Spreadsheet ID of the GT file, `rfq.<domain>` |
-| `rfq-sheets-mirror.json` | Google Sheets OAuth2, Header Auth | A spreadsheet with a tab `APP_Requests_Mirror` (share it only with people allowed to see cost) |
+| `rfq-sheets-mirror.json` | Google Sheets OAuth2, Header Auth | A spreadsheet with a tab `APP_Requests_Mirror` (it contains cost — share it with no one but the cost viewer) |
 | `github-pr-reviewed.json` | Header Auth "GitHub → n8n token", Gmail | — |
 
 ## 8. Bring in the data (one time, as admin → ตั้งค่า → นำเข้าข้อมูล)
 In each Google Sheet tab, use **File → Download → CSV**, then upload it with the matching type:
-1. `_Cost&Price` → **cost_price_sheet**. `_CalDummy` → **cal_dummy_sheet**. The daily n8n sync keeps both fresh afterwards.
+1. `_Cost&Price` → **cost_price_sheet**, with the price list name (e.g. `APR26`) and its effective date. `_CalDummy` → **cal_dummy_sheet**; each row becomes a shared bundle.
+   Every new pricing period: import the new `_Cost&Price` under a **new** name (e.g. `AUG26`) with its start date. You can do this weeks ahead. The daily n8n sync uses the period name in `_ext_sheets!C3`, so it follows the sheet automatically.
 2. Joseph Space:
    - Project costs: CSV with `project_key, customer, description, cost` → **project_costs**.
    - `_Manual.Cal` → **landed_items**.

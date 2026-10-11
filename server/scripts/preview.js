@@ -23,13 +23,17 @@ function day(n) {
 
 (async () => {
   const cfg = load({ NODE_ENV: 'development', DEV_LOGIN: '1', DATABASE_URL: url, PORT: process.env.PORT || '3000',
-    BOOTSTRAP_ADMINS: 'akrawat@eve.co.th', BOOTSTRAP_SUPERVISORS: 'pak.m@eve.co.th', GOOGLE_CLIENT_ID: 'preview' });
+    BOOTSTRAP_ADMINS: 'akrawat@eve.co.th', BOOTSTRAP_SUPERVISORS: 'pak.m@eve.co.th', COST_VIEWERS: 'akrawat@eve.co.th', GOOGLE_CLIENT_ID: 'preview' });
   const db = createPool(url);
   await db.query('drop schema if exists public cascade; create schema public;');
   await migrate(db);
   await seed(db, cfg);
   const today = day(0);
-  await importData(db, { type: 'cost_price_sheet', values: COST_PRICE, today });
+  await importData(db, { type: 'cost_price_sheet', values: COST_PRICE, today, priceList: { name: 'APR26', effectiveFrom: day(-120) } });
+  // next period announced: price change, a new model, and one model dropped
+  await importData(db, { type: 'cost_price_sheet', today, priceList: { name: 'AUG26', effectiveFrom: day(21) }, values: [
+    ["EVE's Model", 'cost', 'price'], ['HC-DEMO-90', '7300', '19990'], ['SINK-DEMO 760/510', '3000', '7990'], ['SET-A + SET-B', '5200', '8990'], ['HC-NEW-120', '9000', '24990']] });
+  await importData(db, { type: 'cal_dummy_sheet', today, values: [['DUMMY SET NAME', 'SKUs1', 'C', 'SKUs2', 'C', 'SKUs3'], ['x', 'HC-DEMO-90', '', 'SINK-DEMO 760/510', '', 'FAUCET-DEMO']] });
   await importData(db, { type: 'project_costs', group: 'JS', today, values: [['project_key', 'customer', 'description', 'cost'], ['3FO3QG6B0RQ1_01', 'คุณดิว', 'Kitchen + Island', '177265.35'], ['JS-NING-WKTP', 'คุณนิ้ง', 'Worktop', '52000']] });
   await importData(db, { type: 'landed_items', group: 'JS_OVS', today, values: [['item_code', 'description', 'factory_rmb', 'exch_rate', 'bp_disc'], ['JS00032', 'HENZELL KITCHEN, JAPANDI', '61296.88', '5.2', '0.44'], ['JS00027', 'HENZELL KITCHEN, RETRO', '59706.94', '5.2', '0.44']] });
 

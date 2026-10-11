@@ -39,7 +39,7 @@ jobs:
             Read CLAUDE.md first — its "Review checklist" section is the standard to apply.
 
             Focus, in this order:
-            1. Cost/margin confidentiality: cost, gain or %MU must never reach a SALES user (API responses, bootstrap, emails, CSV).
+            1. Cost/margin confidentiality: cost, gain and exact %MU reach only COST_VIEWERS (supervisors get the MU band, sales the indicator) — check API responses, bootstrap, emails, CSV, dashboard averages.
             2. Pricing correctness: any change to src/pricing.js, config/price-groups.json or indicator rules must keep
                test/pricing.test.js matching the source sheets; flag rule changes (min GP, thresholds) explicitly for the owner.
             3. Authorization on every RPC function, SQL injection, XSS in the browser code, secrets in code.

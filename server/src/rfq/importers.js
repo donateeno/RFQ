@@ -101,20 +101,57 @@ function headerMap(values, aliases) {
 
 // ---------------------------------------------------------------- cost masters
 
-async function upsertProducts(db, products) {
+/**
+ * Finds the price list by name or creates it. Re-importing into an existing list corrects it in place;
+ * a new name starts a new pricing period from `effectiveFrom` (default: today).
+ */
+async function resolvePriceList(c, priceList, today, user) {
+  const name = String((priceList && priceList.name) || '').trim().slice(0, 60);
+  if (!name) throw new UserError('กรุณาระบุชื่อรอบราคา (เช่น AUG26)');
+  const eff = priceList.effectiveFrom ? parseSheetDate(priceList.effectiveFrom) : null;
+  if (priceList.effectiveFrom && !eff) throw new UserError('วันที่มีผลของรอบราคาไม่ถูกต้อง');
+  const found = (await c.query('select * from price_lists where name = $1', [name])).rows[0];
+  if (found) return { id: found.id, name: found.name, created: false };
+  const r = (await c.query('insert into price_lists (name, effective_from, created_by) values ($1, $2, $3) returning id, name',
+    [name, eff || today, user || ''])).rows[0];
+  return { id: r.id, name: r.name, created: true };
+}
+
+async function upsertProducts(db, products, priceList, today, user) {
   let n = 0;
-  await tx(db, async (c) => {
+  const list = await tx(db, async (c) => {
+    const pl = await resolvePriceList(c, priceList, today, user);
     for (const p of products) {
       await c.query(
-        `insert into products (brand, key, name, cost, normal_price, source, updated_at) values ($1, $2, $3, $4, $5, $6, now())
-         on conflict (brand, key_norm) do update set key = excluded.key, name = excluded.name,
+        `insert into products (price_list_id, brand, key, name, cost, normal_price, source, updated_at) values ($1, $2, $3, $4, $5, $6, $7, now())
+         on conflict (price_list_id, brand, key_norm) do update set key = excluded.key, name = excluded.name,
            cost = coalesce(excluded.cost, products.cost), normal_price = coalesce(excluded.normal_price, products.normal_price),
            source = excluded.source, updated_at = now()`,
-        [p.brand, p.key, p.name || p.key, p.cost, p.normalPrice, p.source || '']);
+        [pl.id, p.brand, p.key, p.name || p.key, p.cost, p.normalPrice, p.source || '']);
       n++;
     }
+    return pl;
   });
-  return n;
+  return { imported: n, priceList: list.name, newPriceList: list.created };
+}
+
+/** The legacy _CalDummy tab becomes shared bundles (component SKUs in B, D, F, H, J; "NON" = empty). */
+async function importBundles(db, values, user) {
+  let imported = 0;
+  let skipped = 0;
+  await tx(db, async (c) => {
+    for (const r of values.slice(1)) {
+      const parts = [1, 3, 5, 7, 9].map((i) => cell(r, i)).filter((k) => k && k.toUpperCase() !== 'NON' && !k.startsWith('#'));
+      if (parts.length < 2) continue;
+      const name = parts.join(' + ');
+      const exists = (await c.query(`select 1 from bundles where active and brand = 'EVE' and name_norm = upper($1)`, [name])).rowCount;
+      if (exists) { skipped++; continue; }
+      const b = (await c.query(`insert into bundles (brand, name, created_by) values ('EVE', $1, $2) returning id`, [name, user || 'import'])).rows[0];
+      for (const [i, k] of parts.entries()) await c.query('insert into bundle_items (bundle_id, position, product_key, qty) values ($1, $2, $3, 1)', [b.id, i, k]);
+      imported++;
+    }
+  });
+  return { imported, skipped };
 }
 
 function productsFromCostPriceSheet(values) {
@@ -145,11 +182,6 @@ function productsFromCostPriceSheet(values) {
     foster.set(code.toUpperCase(), { brand: 'FOSTER', key: code, name: cell(r, 9) || code, cost: toNum(r[10]), normalPrice: toNum(r[11]), source: 'Foster master' });
   });
   return [...eve.values(), ...foster.values()];
-}
-
-function productsFromCalDummy(values) {
-  return values.slice(1).map((r) => ({ brand: 'EVE', key: cell(r, 0), name: cell(r, 0), cost: toNum(r[11]), normalPrice: toNum(r[18]), source: 'Dummy set' }))
-    .filter((p) => p.key && !p.key.startsWith('#') && p.key.toUpperCase() !== 'DUMMY SET NAME');
 }
 
 function productsFlat(values, defaultBrand) {
@@ -276,7 +308,7 @@ async function legacyRow(db, v, L, findChannel, settings, today) {
   const flags = ['นำเข้าจากชีตเดิม: ต้นทุน/%MU คิดจากต้นทุน ณ วันนำเข้า'];
   if (ch.guessed) flags.push(`ช่องทางเดิม "${cell(v, 4)}" ไม่ชัดเจน — จัดเป็น ${channel.name}`);
 
-  const item = await lookupItem(db, group, channel, cell(v, L.key));
+  const item = await lookupItem(db, group, channel, cell(v, L.key), today);
   const productKey = cell(v, L.key);
   const productName = item ? item.name : (channel.brand === 'FOSTER' ? cell(v, 6) || productKey : productKey);
 
@@ -327,7 +359,9 @@ async function legacyRow(db, v, L, findChannel, settings, today) {
     decided_by: decided ? cell(v, L.decidedBy).toLowerCase() || null : null,
     decided_at: decided && parseSheetDate(v[L.decidedAt]) ? parseSheetDate(v[L.decidedAt]) + 'T12:00:00+07:00' : null,
     decision_comment: status === 'Closed' ? 'หมดอายุโดยไม่มีการพิจารณา (ข้อมูลเดิม)' : '',
-    flags, source: 'LEGACY:' + Object.keys(LEGACY).find((k) => LEGACY[k] === L)
+    flags, source: 'LEGACY:' + Object.keys(LEGACY).find((k) => LEGACY[k] === L),
+    price_list_id: item && item.priceList ? item.priceList.id : null,
+    bundle_id: item && item.bundleId ? item.bundleId : null
   };
 }
 
@@ -346,13 +380,13 @@ async function syncCounters(c) {
 
 // ---------------------------------------------------------------- entry point
 
-async function importData(db, { type, values, brand, group, today }) {
+async function importData(db, { type, values, brand, group, today, priceList, user }) {
   if (!Array.isArray(values) || values.length < 2) throw new UserError('ไฟล์ว่างหรือไม่มีข้อมูล');
   if (values.length > 60000) throw new UserError('ข้อมูลมากเกินไป (สูงสุด 60,000 แถว)');
   switch (type) {
-    case 'products': return { type, imported: await upsertProducts(db, productsFlat(values, brand)) };
-    case 'cost_price_sheet': return { type, imported: await upsertProducts(db, productsFromCostPriceSheet(values)) };
-    case 'cal_dummy_sheet': return { type, imported: await upsertProducts(db, productsFromCalDummy(values)) };
+    case 'products': return { type, ...(await upsertProducts(db, productsFlat(values, brand), priceList, today, user)) };
+    case 'cost_price_sheet': return { type, ...(await upsertProducts(db, productsFromCostPriceSheet(values), priceList, today, user)) };
+    case 'cal_dummy_sheet': return { type, ...(await importBundles(db, values, user)) };
     case 'project_costs': return { type, ...(await importProjectCosts(db, values, group || 'JS')) };
     case 'landed_items': return { type, ...(await importLandedItems(db, values, group || 'JS_OVS')) };
     default:
