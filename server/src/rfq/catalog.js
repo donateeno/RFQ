@@ -6,7 +6,7 @@ async function getSettings(db) {
   const { rows } = await db.query('select key, value from settings');
   const s = {};
   rows.forEach((r) => { s[r.key] = r.value; });
-  ['VAT_RATE', 'DEFAULT_VALIDITY_DAYS', 'MAX_VALIDITY_DAYS'].forEach((k) => { s[k] = Number(s[k]); });
+  ['VAT_RATE', 'DEFAULT_VALIDITY_DAYS', 'MAX_VALIDITY_DAYS', 'PRICE_CHECK_ALERT', 'PRICE_CHECK_LIMIT', 'PRICE_CHECK_PER_HOUR'].forEach((k) => { s[k] = Number(s[k]); });
   return s;
 }
 

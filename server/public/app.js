@@ -1025,7 +1025,8 @@
 
   function renderAdmin(a) {
     var c = a.counts;
-    var editable = ['VAT_RATE', 'DEFAULT_VALIDITY_DAYS', 'MAX_VALIDITY_DAYS', 'NOTIFY_EMAILS'];
+    var editable = ['VAT_RATE', 'DEFAULT_VALIDITY_DAYS', 'MAX_VALIDITY_DAYS', 'NOTIFY_EMAILS', 'PRICE_CHECK_ALERT', 'PRICE_CHECK_LIMIT', 'PRICE_CHECK_PER_HOUR'];
+    var setting = function (k) { var x = a.settings.filter(function (s) { return s.key === k; })[0]; return x ? x.value : ''; };
     var rulesText = function (rules) {
       return (rules || []).map(function (r) { return '<code>' + esc(r.indicator) + ' ' + (r.below !== undefined ? '&lt; ' + pct(r.below, 0) : '≤ ' + pct(r.upTo, 0)) + '</code>'; }).join(' ') + ' <code>OKAY</code>';
     };
@@ -1033,8 +1034,8 @@
       '<div class="grid-2"><div class="card"><h2>นำเข้าข้อมูล (CSV)</h2>' +
       '<p class="hint">Google Sheets → File → Download → Comma-separated values (.csv) ของแท็บที่ต้องการ · n8n สามารถส่งข้อมูลเดียวกันอัตโนมัติผ่าน /api/integrations/import</p>' +
       '<div class="fields"><div class="field wide"><label>ประเภท</label><select id="imp-type">' + IMPORT_TYPES.map(function (t) { return '<option value="' + t[0] + '">' + esc(t[1]) + '</option>'; }).join('') + '</select></div>' +
-      '<div class="field pl-only"><label>รอบราคา</label><input type="text" id="imp-pl" placeholder="เช่น AUG26" list="dl-pricelists"><span class="hint">ชื่อเดิม = แก้ไขรอบนั้น · ชื่อใหม่ = สร้างรอบใหม่</span></div>' +
-      '<div class="field pl-only"><label>มีผลตั้งแต่ (รอบใหม่)</label><input type="date" id="imp-eff"><span class="hint">ว่าง = วันนี้</span></div>' +
+      '<div class="field pl-only"><label>รอบราคา</label><input type="text" id="imp-pl" placeholder="เช่น AUG26" list="dl-pricelists"><span class="hint">ชื่อเดิม = แก้ไขรอบนั้น (ไม่สนตัวพิมพ์เล็ก/ใหญ่) · ชื่อใหม่ = สร้างรอบใหม่</span></div>' +
+      '<div class="field pl-only"><label>มีผลตั้งแต่ (รอบใหม่)</label><input type="date" id="imp-eff"><span class="hint">ต้องระบุเมื่อสร้างรอบใหม่</span></div>' +
       '<div class="field brand-only"><label>Brand (CSV สินค้า)</label><select id="imp-brand"><option>EVE</option><option>FOSTER</option></select><span class="hint"></span></div>' +
       '<div class="field"><label>ไฟล์ CSV</label><input type="file" id="imp-file" accept=".csv,text/csv"><span class="hint"></span></div></div>' +
       '<datalist id="dl-pricelists">' + a.priceLists.map(function (l) { return '<option value="' + esc(l.name) + '">'; }).join('') + '</datalist>' +
@@ -1061,7 +1062,16 @@
           '<td data-label="คำขอ" class="num">' + l.requests + '</td><td data-label="หมายเหตุ" class="muted">' + esc(l.note) + '</td>' +
           '<td data-label=""><div class="row"><button class="btn small ghost" data-pl-save="' + l.id + '">บันทึกวันที่</button>' +
           (l.effectiveFrom > S.boot.today && !l.requests ? '<button class="btn small bad" data-pl-del="' + l.id + '">ลบ</button>' : '') + '</div></td></tr>';
-      }).join('') + '</tbody></table></div></div>' +
+      }).join('') + '</tbody></table></div>' +
+      '<div class="user-form"><div class="field"><label>สร้างรอบราคาใหม่ (ว่าง)</label><input type="text" id="pl-new-name" placeholder="เช่น AUG26"></div>' +
+      '<div class="field"><label>มีผลตั้งแต่</label><input type="date" id="pl-new-eff"></div>' +
+      '<button class="btn primary" id="pl-new-go">สร้างรอบราคา</button></div>' +
+      '<p class="hint">สร้างรอบล่วงหน้าพร้อมวันที่มีผล แล้วให้ n8n ดึงราคาเข้ารอบนี้ — การนำเข้าอัตโนมัติจะไม่สร้างรอบที่มีผลวันนี้เอง</p></div>' +
+      '<div class="card stack-gap"><h2>การตรวจราคาที่ผิดปกติ (7 วัน)</h2><p class="hint">ผู้ใช้ที่ตรวจราคาสินค้าเดียวกันตั้งแต่ ' + esc(String(setting('PRICE_CHECK_ALERT'))) + ' ราคาขึ้นไป อาจเป็นการไล่ราคาเพื่อเดาต้นทุน — ระบบแจ้งอีเมล Admin และจำกัดที่ ' + esc(String(setting('PRICE_CHECK_LIMIT'))) + ' ราคา/สินค้า/24 ชม.</p>' +
+      (a.priceCheckAlerts.length ? '<div class="table-wrap"><table class="cards"><thead><tr><th>ผู้ใช้</th><th>ช่องทาง</th><th>สินค้า</th><th class="num">จำนวนราคา</th><th class="num">ครั้ง</th><th>ล่าสุด</th></tr></thead><tbody>' +
+        a.priceCheckAlerts.map(function (x) {
+          return '<tr><td data-label="ผู้ใช้">' + esc(x.user) + '</td><td data-label="ช่องทาง">' + esc(x.channel) + '</td><td data-label="สินค้า">' + esc(x.key) + '</td><td data-label="จำนวนราคา" class="num">' + x.prices + '</td><td data-label="ครั้ง" class="num">' + x.checks + '</td><td data-label="ล่าสุด" class="nowrap">' + esc(x.lastAt.replace('T', ' ').slice(0, 16)) + '</td></tr>';
+        }).join('') + '</tbody></table></div>' : '<div class="muted">ไม่พบ</div>') + '</div>' +
       '<div class="card stack-gap"><h2>ผู้ใช้และสิทธิ์</h2><p class="hint">ทุกคนที่ใช้อีเมลบริษัทเข้าใช้ได้ในฐานะ SALES อัตโนมัติ เพิ่มที่นี่เพื่อกำหนดเป็น SUPERVISOR / ADMIN หรือปิดบัญชี · สิทธิ์ดูต้นทุนกำหนดได้เฉพาะที่เซิร์ฟเวอร์ (COST_VIEWERS) ไม่สามารถให้สิทธิ์จากหน้านี้</p>' +
       '<div class="table-wrap"><table class="cards"><thead><tr><th>อีเมล</th><th>ชื่อ</th><th>Role</th><th>ดูต้นทุน</th><th>ใช้งาน</th><th>เข้าใช้ล่าสุด</th><th></th></tr></thead><tbody>' +
       a.users.map(function (u) {
@@ -1095,6 +1105,11 @@
     };
     $('#imp-type').addEventListener('change', syncImp);
     syncImp();
+    $('#pl-new-go').addEventListener('click', function () {
+      var name = $('#pl-new-name').value.trim(), eff = $('#pl-new-eff').value;
+      if (!name || !eff) return toast('กรุณาระบุชื่อรอบและวันที่มีผล', true);
+      run('createPriceList', { name: name, effectiveFrom: eff }).then(function (a2) { toast('สร้างรอบราคา ' + name + ' แล้ว'); renderAdmin(a2); }).catch(fail);
+    });
     $$('[data-pl-save]').forEach(function (b) {
       b.addEventListener('click', function () {
         var id = b.getAttribute('data-pl-save');
@@ -1121,6 +1136,7 @@
         return run('importCsv', { type: t, brand: $('#imp-brand').value, priceList: pl, csv: csv, fileName: file.name });
       }).then(function (r) {
         $('#imp-res').innerHTML = '<div class="notice" style="margin-top:10px">นำเข้า ' + r.imported + ' รายการ' + (r.priceList ? ' เข้ารอบราคา ' + esc(r.priceList) + (r.newPriceList ? ' (รอบใหม่)' : '') : '') + (r.skipped ? ', ข้าม ' + r.skipped + ' (มีอยู่แล้ว)' : '') +
+          (r.costConflictCount ? '<div class="banner" style="margin:6px 0 0;padding:6px 10px">ต้นทุนในชีตไม่ตรงกัน ' + r.costConflictCount + ' รายการ (A:C EVE master ≠ E:G GT hot price) — ระบบใช้ต้นทุน E:G เป็นต้นทุนเดียวของทุกกลุ่มราคา: ' + r.costConflicts.slice(0, 20).map(esc).join(', ') + (r.costConflictCount > 20 ? ' …' : '') + '</div>' : '') +
           (r.errors && r.errors.length ? '<br><span style="color:var(--danger)">' + r.errors.slice(0, 10).map(esc).join('<br>') + (r.errors.length > 10 ? '<br>…' : '') + '</span>' : '') + '</div>';
         S.mon = null; S.ap.rows = null;
       }).catch(fail).then(function () { btn.disabled = false; btn.textContent = 'นำเข้า'; });

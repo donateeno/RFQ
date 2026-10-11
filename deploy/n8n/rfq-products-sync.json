@@ -208,5 +208,5 @@
   "active": false,
   "staticData": null,
   "versionId": "bab5c213-913a-49fc-8773-d5146e9401e2",
-  "_comment": "Reads the period name (e.g. Apr26) from _ext_sheets!C3, then imports _Cost&Price into that price list (new name = new list effective today; set an earlier/later date in the app → ตั้งค่า → รอบราคา). _CalDummy rows become shared bundles."
+  "_comment": "Reads the period name (e.g. Apr26) from _ext_sheets!C3, then imports _Cost&Price into that price list (the list must exist first: create it with its effective date in the app → ตั้งค่า → รอบราคา, or add &effectiveFrom=YYYY-MM-DD for a date after today; an unknown name returns 409 and nothing is imported). _CalDummy rows become shared bundles."
 }

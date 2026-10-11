@@ -8,7 +8,10 @@ const DEFAULT_SETTINGS = [
   ['VAT_RATE', 0.07, 'VAT ที่ใช้แปลงราคาสุทธิเป็นราคาไม่รวม VAT'],
   ['DEFAULT_VALIDITY_DAYS', 30, 'จำนวนวันเริ่มต้นระหว่างวันเริ่มและวันสิ้นสุดราคาพิเศษ'],
   ['MAX_VALIDITY_DAYS', 90, 'ระยะเวลาราคาพิเศษสูงสุดที่ผู้ขอเลือกได้'],
-  ['NOTIFY_EMAILS', '', 'อีเมลเพิ่มเติม (คั่นด้วย ,) ที่ได้รับแจ้งเมื่อมีคำขอใหม่ — Supervisor/Admin ได้รับเสมอ']
+  ['NOTIFY_EMAILS', '', 'อีเมลเพิ่มเติม (คั่นด้วย ,) ที่ได้รับแจ้งเมื่อมีคำขอใหม่ — Supervisor/Admin ได้รับเสมอ'],
+  ['PRICE_CHECK_ALERT', 15, 'แจ้งเตือน Admin เมื่อผู้ใช้ตรวจราคาสินค้าเดียวกันครบกี่ราคาสุทธิ (ไม่ซ้ำ ทุกช่องทาง) ใน 24 ชม. — ป้องกันการเดาต้นทุน'],
+  ['PRICE_CHECK_LIMIT', 30, 'จำนวนราคาสุทธิ (ไม่ซ้ำ ทุกช่องทาง) สูงสุดที่ผู้ใช้ตรวจสินค้าเดียวกันได้ใน 24 ชม.'],
+  ['PRICE_CHECK_PER_HOUR', 300, 'จำนวนครั้งตรวจราคาสูงสุดต่อผู้ใช้ต่อชั่วโมง']
 ];
 
 function loadPriceGroups(file) {
@@ -102,6 +105,7 @@ async function seed(pool, cfg, groups) {
       await c.query(`insert into users (email, name) values ($1, $2) on conflict (email) do nothing`, [email, email.split('@')[0]]);
     }
     await c.query('update users set can_view_cost = (email = any($1::text[]))', [cfg.costViewers]);
+    await c.query(`delete from price_checks where at < now() - interval '180 days'`);
   });
 }
 

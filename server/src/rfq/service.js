@@ -233,6 +233,7 @@ async function priceCheck(ctx, payload) {
   const settings = await getSettings(db);
   const { group, channel } = await getChannel(db, payload && payload.channelId);
   const p = await prepareLine(db, group, channel, payload || {}, settings, todayIso(ctx.cfg.timezone));
+  await guardPriceCheck(ctx, settings, channel, (payload || {}).productKey, p);
   const it = p.item || {};
   const out = {
     found: p.found, productKey: p.productKey, productName: p.productName, normalPrice: p.normalPrice,
@@ -242,6 +243,37 @@ async function priceCheck(ctx, payload) {
   if (user.role !== 'SALES') Object.assign(out, { netIncVat: p.calc.netIncVat, netExVat: p.calc.netExVat, muBand: muBand(p.calc.mu, group.indicatorRules) });
   if (canSeeCost(user)) Object.assign(out, { cost: p.calc.cost, gain: p.calc.gain, mu: p.calc.mu });
   return out;
+}
+
+/**
+ * The indicator and MU band change at fixed %MU thresholds, so checking one item at many net prices
+ * (special price, discounts or channel) narrows down its cost. For everyone who cannot see cost: log
+ * each check, refuse more than PRICE_CHECK_LIMIT different net prices for one item in 24 h (or
+ * PRICE_CHECK_PER_HOUR checks in total), and alert the admins when someone reaches PRICE_CHECK_ALERT.
+ * Re-checking a net price already tried is free.
+ */
+async function guardPriceCheck(ctx, settings, channel, rawKey, p) {
+  const { db, user } = ctx;
+  if (canSeeCost(user)) return;
+  const key = str(rawKey, 200);
+  const net = p.calc.netIncVat === null || p.calc.netIncVat === undefined ? p.specialPrice : p.calc.netIncVat;
+  const hourly = (await db.query(`select count(*)::int as n from price_checks where user_email = $1 and at > now() - interval '1 hour'`, [user.email])).rows[0].n;
+  if (hourly >= settings.PRICE_CHECK_PER_HOUR) throw new UserError('ตรวจราคาบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่', 429);
+  const seen = (await db.query(
+    `select count(distinct net_price)::int as n, coalesce(bool_or(net_price = $3), false) as tried from price_checks
+     where user_email = $1 and key_norm = upper(btrim($2)) and at > now() - interval '24 hours'`,
+    [user.email, key, net])).rows[0];
+  if (!seen.tried && seen.n >= settings.PRICE_CHECK_LIMIT) {
+    throw new UserError(`ตรวจราคาสินค้านี้ครบ ${settings.PRICE_CHECK_LIMIT} ราคาใน 24 ชม. แล้ว — กรุณาส่งคำขออนุมัติ หรือติดต่อหัวหน้า`, 429);
+  }
+  await db.query('insert into price_checks (user_email, channel_id, key_norm, special_price, net_price, indicator) values ($1, $2, upper(btrim($3)), $4, $5, $6)',
+    [user.email, channel.id, key, p.specialPrice, net, p.calc.indicator]);
+  if (!seen.tried && seen.n < settings.PRICE_CHECK_ALERT && seen.n + 1 >= settings.PRICE_CHECK_ALERT) {
+    const detail = { channel: channel.id, key, prices: seen.n + 1 };
+    await log(db, user.email, 'PRICE_CHECK_ALERT', [], detail);
+    const to = (await db.query(`select email from users where active and (role = 'ADMIN' or can_view_cost) order by email`)).rows.map((r) => r.email);
+    ctx.notify(notifyMsg.priceCheckAlert(ctx.cfg, user, channel, key, detail.prices, to));
+  }
 }
 
 async function submitRequest(ctx, payload) {
@@ -523,16 +555,27 @@ async function getAdminInfo(ctx) {
       landedItems: Number((await q('select count(*) from landed_items'))[0].count),
       requests: Number((await q('select count(*) from requests'))[0].count)
     },
+    priceCheckAlerts: await priceCheckAlerts(db, await getSettings(db)),
     recentLog: (await q('select at, user_email, action, req_ids, detail from audit_log order by at desc limit 30')).map((l) => ({
       at: l.at.toISOString(), user: l.user_email, action: l.action, ids: l.req_ids.slice(0, 5).join(', ') + (l.req_ids.length > 5 ? ' …' : ''), detail: JSON.stringify(l.detail)
     }))
   };
 }
 
+/** Users who checked one item at many different prices in the last 7 days (see guardPriceCheck). */
+async function priceCheckAlerts(db, settings) {
+  return (await db.query(
+    `select user_email, key_norm, string_agg(distinct channel_id, ', ') as channels, count(distinct net_price)::int as prices,
+       count(*)::int as checks, max(at) as last_at
+     from price_checks where at > now() - interval '7 days'
+     group by 1, 2 having count(distinct net_price) >= $1 order by last_at desc limit 50`, [settings.PRICE_CHECK_ALERT])).rows
+    .map((r) => ({ user: r.user_email, channel: r.channels, key: r.key_norm, prices: r.prices, checks: r.checks, lastAt: r.last_at.toISOString() }));
+}
+
 async function saveSettings(ctx, changes) {
   const user = admin(ctx);
   changes = changes || {};
-  const numeric = { VAT_RATE: [0, 0.3], DEFAULT_VALIDITY_DAYS: [1, 365], MAX_VALIDITY_DAYS: [1, 365] };
+  const numeric = { VAT_RATE: [0, 0.3], DEFAULT_VALIDITY_DAYS: [1, 365], MAX_VALIDITY_DAYS: [1, 365], PRICE_CHECK_ALERT: [2, 1000], PRICE_CHECK_LIMIT: [2, 1000], PRICE_CHECK_PER_HOUR: [10, 10000] };
   const current = await getSettings(ctx.db);
   const next = Object.assign({}, current);
   for (const key of Object.keys(changes)) {
@@ -547,6 +590,7 @@ async function saveSettings(ctx, changes) {
     next[key] = v;
   }
   if (next.DEFAULT_VALIDITY_DAYS > next.MAX_VALIDITY_DAYS) throw new UserError('DEFAULT_VALIDITY_DAYS ต้องไม่เกิน MAX_VALIDITY_DAYS');
+  if (next.PRICE_CHECK_ALERT > next.PRICE_CHECK_LIMIT) throw new UserError('PRICE_CHECK_ALERT ต้องไม่เกิน PRICE_CHECK_LIMIT');
   await tx(ctx.db, async (c) => {
     for (const key of Object.keys(changes)) {
       if (key in current) await c.query('update settings set value = $2 where key = $1', [key, JSON.stringify(next[key])]);
@@ -604,6 +648,19 @@ async function priceListSummary(db, today) {
     });
     return { id: l.id, name: l.name, effectiveFrom: l.effective_from, note: l.note, createdBy: l.created_by, requests: l.requests, brands };
   });
+}
+
+/** Creates an empty price list with its date, so the n8n sync can fill it (n8n never creates a list that starts today). */
+async function createPriceList(ctx, payload) {
+  const user = admin(ctx);
+  payload = payload || {};
+  const name = str(payload.name, 60);
+  if (!name) throw new UserError('กรุณาระบุชื่อรอบราคา (เช่น AUG26)');
+  if (!isIsoDate(payload.effectiveFrom)) throw new UserError('วันที่มีผลไม่ถูกต้อง');
+  if ((await ctx.db.query('select 1 from price_lists where name_norm = upper(btrim($1))', [name])).rowCount) throw new UserError('มีรอบราคาชื่อนี้แล้ว');
+  await ctx.db.query('insert into price_lists (name, effective_from, note, created_by) values ($1, $2, $3, $4)', [name, payload.effectiveFrom, str(payload.note, 300), user.email]);
+  await log(ctx.db, user.email, 'CREATE_PRICE_LIST', [], { name, effectiveFrom: payload.effectiveFrom });
+  return getAdminInfo(ctx);
 }
 
 async function savePriceList(ctx, payload) {
@@ -688,7 +745,7 @@ module.exports = {
   rpc: {
     getBootstrap, priceCheck, submitRequest, listMyRequests, listRequests, searchApprovedPrices, getLineContext,
     decideRequests, cancelMyRequests, getDashboard, getAdminInfo, saveSettings, saveUser, importCsv,
-    savePriceList, deletePriceList, createBundle, deleteBundle
+    createPriceList, savePriceList, deletePriceList, createBundle, deleteBundle
   },
   // internal
   todayIso, STATUS

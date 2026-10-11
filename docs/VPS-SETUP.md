@@ -110,7 +110,9 @@ Import each file in **n8n → Workflows → Import from file**. Then set its cre
 ## 8. Bring in the data (one time, as admin → ตั้งค่า → นำเข้าข้อมูล)
 In each Google Sheet tab, use **File → Download → CSV**, then upload it with the matching type:
 1. `_Cost&Price` → **cost_price_sheet**, with the price list name (e.g. `APR26`) and its effective date. `_CalDummy` → **cal_dummy_sheet**; each row becomes a shared bundle.
-   Every new pricing period: import the new `_Cost&Price` under a **new** name (e.g. `AUG26`) with its start date. You can do this weeks ahead. The daily n8n sync uses the period name in `_ext_sheets!C3`, so it follows the sheet automatically.
+   Every new pricing period: import the new `_Cost&Price` under a **new** name (e.g. `AUG26`) with its start date. You can do this weeks ahead. Names ignore upper/lower case (`aug26` = `AUG26`).
+   The daily n8n sync uses the period name in `_ext_sheets!C3`. It only fills a list that already exists, so **create the new period first** in ตั้งค่า → รอบราคา → สร้างรอบราคา (name + start date). If the sheet already shows a name the app doesn't know, the sync fails with "ยังไม่มีในระบบ" and changes nothing, so prices never switch on the import day by accident.
+   If the import shows "ต้นทุนในชีตไม่ตรงกัน", the sheet's E:G cost (GT hot price) differs from the A:C master for those models. The app uses the E:G cost as the single cost for every price group.
 2. Joseph Space:
    - Project costs: CSV with `project_key, customer, description, cost` → **project_costs**.
    - `_Manual.Cal` → **landed_items**.

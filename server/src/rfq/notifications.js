@@ -58,6 +58,20 @@ function decided(cfg, rows, approver) {
   });
 }
 
+/** Someone checked one item at many prices (possible cost guessing). Names the user and item only. */
+function priceCheckAlert(cfg, user, channel, key, prices, to) {
+  if (!to.length) return null;
+  return {
+    event: 'security.price_check_alert',
+    to,
+    subject: `[RFQ] แจ้งเตือน: ${user.email} ตรวจราคา ${key} ${prices} ราคาใน 24 ชม.`,
+    html: `<p><b>${esc(user.email)}</b> (${esc(user.role)}) ตรวจราคาสินค้า <b>${esc(key)}</b> ช่องทาง ${esc(channel.name)}
+      ด้วยราคาสุทธิที่ต่างกัน ${prices} ราคาภายใน 24 ชั่วโมง ซึ่งอาจเป็นการไล่ราคาเพื่อเดาต้นทุน</p>
+      <p><a href="${cfg.baseUrl}/#admin">ดูรายละเอียดที่ ตั้งค่า → การตรวจราคาที่ผิดปกติ</a></p>`,
+    ids: []
+  };
+}
+
 /** Fire-and-forget POST to n8n. Never throws. */
 function createNotifier(cfg, logger) {
   return function notify(msg) {
@@ -73,4 +87,4 @@ function createNotifier(cfg, logger) {
   };
 }
 
-module.exports = { submitted, decided, createNotifier };
+module.exports = { submitted, decided, priceCheckAlert, createNotifier };

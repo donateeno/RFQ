@@ -9,7 +9,9 @@ Sales staff check a special price and request approval. Supervisors approve requ
 | **Admin** | Settings, users & roles, price lists, CSV imports, audit log |
 | **Cost viewer** (`COST_VIEWERS`, server setting only — currently the owner) | Additionally sees cost, gain and exact %MU everywhere |
 
-**Price lists:** list prices change every ~4 months. Each import goes into a named list with an effective date (e.g. `AUG26` from 1 Aug), so the next list can be loaded early. Screens show "ราคาใหม่" and "ใหม่" tags until then, and the system switches automatically on the date. Approved special prices stay valid until their own end date. Pending requests are re-priced with the new list and shown that way to the approver.
+**Price lists:** list prices change every ~4 months. Each import goes into a named list with an effective date (e.g. `AUG26` from 1 Aug), so the next list can be loaded early. Screens show "ราคาใหม่" and "ใหม่" tags until then, and the system switches automatically on the date. Approved special prices stay valid until their own end date. Pending requests are re-priced with the new list and shown that way to the approver. A new list always needs a start date (the n8n sync never creates one that starts today).
+
+**Cost:** one cost per product, used by every price group (GT, BT and OFFI never disagree). Bundles add up the same component costs. **Price checks** by anyone who can't see cost are logged. Checking one item at many prices (a way to guess cost from the indicator) alerts the admins by email, and is refused after a limit (ตั้งค่า: `PRICE_CHECK_ALERT`, `PRICE_CHECK_LIMIT`, `PRICE_CHECK_PER_HOUR`).
 
 **Bundles:** anyone can combine 2–5 items into a set (like the old DUMMY SET tab). Everyone can use it. Its list price and cost are the sums of its components in the current price list.
 

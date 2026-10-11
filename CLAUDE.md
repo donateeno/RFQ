@@ -8,7 +8,7 @@ supervisors approve and monitor margin (%MU). Thai UI, Thai business terms.
   - `config/price-groups.json` — price groups → channels, formulas, discounts (default/min/max), MU indicator rules. Source of truth, synced to the DB on start.
   - `src/pricing.js` — pure pricing maths. `src/rfq/service.js` — business logic; every function in `rpc` is browser-callable.
   - `src/rfq/importers.js` — CSV / n8n imports (cost masters, legacy sheet tabs). `src/rfq/notifications.js` — email payloads for n8n.
-  - Price lists: products belong to a `price_lists` period; each brand uses its newest effective list. Pending requests are re-priced on approval; approved prices keep their snapshot until their end date.
+  - Price lists: products belong to a `price_lists` period; each brand uses its newest effective list. Pending requests are re-priced on approval; approved prices keep their snapshot until their end date. Price-list names are case-insensitive (`name_norm`); a new list always needs an explicit date.
   - Bundles (`bundles`, `bundle_items`): user-built sets priced live from the current list.
   - `migrations/*.sql` — append-only. `public/` — static browser app (no build step, ES5-style, no framework).
   - `test/` — `node:test` against a real PostgreSQL (`TEST_DATABASE_URL`).
@@ -25,7 +25,7 @@ PREVIEW_DATABASE_URL=postgres://...rfq_preview node scripts/preview.js     # sam
 ```
 
 ## Non-negotiable rules
-1. **Cost confidentiality.** `cost`, `gain` and exact `mu` reach **only cost viewers** (`users.can_view_cost`, set from the `COST_VIEWERS` env var — never from the app). Supervisors get `netExVat` + `muBand`; sales get the indicator only. Applies to RPC results, bootstrap, emails, exports and dashboard averages. Use `makeView()` / `canSeeCost()`; add a test when touching this.
+1. **Cost confidentiality.** `cost`, `gain` and exact `mu` reach **only cost viewers** (`users.can_view_cost`, set from the `COST_VIEWERS` env var — never from the app). Supervisors get `netExVat` + `muBand`; sales get the indicator only. Applies to RPC results, bootstrap, emails, exports and dashboard averages. Use `makeView()` / `canSeeCost()`; add a test when touching this. `priceCheck` is logged in `price_checks` (never cost) and rate-limited per user/item to stop cost guessing; keep the guard on any new endpoint that returns an indicator or MU band for a caller-chosen price.
 2. **Pricing must match the source sheets.** Any change to formulas or rules needs a test in `test/pricing.test.js` with numbers taken from the sheet it mirrors. Business-rule changes (min GP, thresholds, fixed GP) go in `price-groups.json`, never hard-coded.
 3. **Every RPC function checks the role itself** (`approver(ctx)` / `admin(ctx)`). Never trust IDs, prices or discounts from the browser — recompute server-side.
 4. **SQL** only with parameters (`$1`), never string-built values. **HTML** in `public/app.js` only through `esc()`.

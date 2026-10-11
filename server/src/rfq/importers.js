@@ -102,25 +102,29 @@ function headerMap(values, aliases) {
 // ---------------------------------------------------------------- cost masters
 
 /**
- * Finds the price list by name or creates it. Re-importing into an existing list corrects it in place;
- * a new name starts a new pricing period from `effectiveFrom` (default: today).
+ * Finds the price list by name (case-insensitive) or creates it. Re-importing into an existing list
+ * corrects it in place and keeps its date. A new list always needs an explicit effective date, so an
+ * import can never switch prices on the import day by accident. `futureOnly` (n8n) only lets it create
+ * lists that start after today; anything else must be set up by an admin in ตั้งค่า → รอบราคา first.
  */
-async function resolvePriceList(c, priceList, today, user) {
+async function resolvePriceList(c, priceList, today, user, futureOnly) {
   const name = String((priceList && priceList.name) || '').trim().slice(0, 60);
   if (!name) throw new UserError('กรุณาระบุชื่อรอบราคา (เช่น AUG26)');
   const eff = priceList.effectiveFrom ? parseSheetDate(priceList.effectiveFrom) : null;
   if (priceList.effectiveFrom && !eff) throw new UserError('วันที่มีผลของรอบราคาไม่ถูกต้อง');
-  const found = (await c.query('select * from price_lists where name = $1', [name])).rows[0];
-  if (found) return { id: found.id, name: found.name, created: false };
-  const r = (await c.query('insert into price_lists (name, effective_from, created_by) values ($1, $2, $3) returning id, name',
-    [name, eff || today, user || ''])).rows[0];
-  return { id: r.id, name: r.name, created: true };
+  const found = (await c.query('select id, name, effective_from::text as eff from price_lists where name_norm = upper(btrim($1))', [name])).rows[0];
+  if (found) return { id: found.id, name: found.name, effectiveFrom: found.eff, created: false };
+  if (!eff) throw new UserError(`รอบราคา ${name} ยังไม่มีในระบบ — รอบใหม่ต้องระบุวันที่มีผล หรือให้ Admin สร้างรอบที่ ตั้งค่า → รอบราคา ก่อน`, 409);
+  if (futureOnly && eff <= today) throw new UserError(`รอบราคา ${name} ยังไม่มีในระบบ — การนำเข้าอัตโนมัติสร้างได้เฉพาะรอบที่มีผลหลังวันนี้ ให้ Admin สร้างรอบที่ ตั้งค่า → รอบราคา`, 409);
+  const r = (await c.query('insert into price_lists (name, effective_from, created_by) values ($1, $2, $3) returning id, name, effective_from::text as eff',
+    [name, eff, user || ''])).rows[0];
+  return { id: r.id, name: r.name, effectiveFrom: r.eff, created: true };
 }
 
-async function upsertProducts(db, products, priceList, today, user) {
+async function upsertProducts(db, products, priceList, today, user, futureOnly) {
   let n = 0;
   const list = await tx(db, async (c) => {
-    const pl = await resolvePriceList(c, priceList, today, user);
+    const pl = await resolvePriceList(c, priceList, today, user, futureOnly);
     for (const p of products) {
       await c.query(
         `insert into products (price_list_id, brand, key, name, cost, normal_price, source, updated_at) values ($1, $2, $3, $4, $5, $6, $7, now())
@@ -132,7 +136,7 @@ async function upsertProducts(db, products, priceList, today, user) {
     }
     return pl;
   });
-  return { imported: n, priceList: list.name, newPriceList: list.created };
+  return { imported: n, priceList: list.name, effectiveFrom: list.effectiveFrom, newPriceList: list.created };
 }
 
 /** The legacy _CalDummy tab becomes shared bundles (component SKUs in B, D, F, H, J; "NON" = empty). */
@@ -154,8 +158,14 @@ async function importBundles(db, values, user) {
   return { imported, skipped };
 }
 
+/**
+ * The _Cost&Price tab: EVE master in A:C, GT hot price in E:G (wins over the master), Foster in I:L.
+ * One cost per product is used by every price group, so keys whose E:G cost differs from the A:C cost
+ * are reported (keys only — the result is shown to admins who may not see cost).
+ */
 function productsFromCostPriceSheet(values) {
   const eve = new Map();
+  const costConflicts = [];
   const put = (key, cost, price, source, override) => {
     key = String(key || '').trim();
     if (!key || key.startsWith('#')) return;
@@ -164,6 +174,7 @@ function productsFromCostPriceSheet(values) {
     cost = toNum(cost); price = toNum(price);
     if (!cur) eve.set(id, { brand: 'EVE', key, name: key, cost, normalPrice: price, source });
     else if (override) {
+      if (cost !== null && cur.cost !== null && Math.abs(cost - cur.cost) >= 0.005) costConflicts.push(key);
       if (cost !== null) cur.cost = cost;
       if (price !== null) cur.normalPrice = price;
       cur.source = source;
@@ -181,7 +192,7 @@ function productsFromCostPriceSheet(values) {
     if (!code || code.startsWith('#') || foster.has(code.toUpperCase())) return;
     foster.set(code.toUpperCase(), { brand: 'FOSTER', key: code, name: cell(r, 9) || code, cost: toNum(r[10]), normalPrice: toNum(r[11]), source: 'Foster master' });
   });
-  return [...eve.values(), ...foster.values()];
+  return { products: [...eve.values(), ...foster.values()], costConflicts };
 }
 
 function productsFlat(values, defaultBrand) {
@@ -380,12 +391,17 @@ async function syncCounters(c) {
 
 // ---------------------------------------------------------------- entry point
 
-async function importData(db, { type, values, brand, group, today, priceList, user }) {
+/** @param {{newListFutureOnly?: boolean}} opts newListFutureOnly: set for n8n (see resolvePriceList) */
+async function importData(db, { type, values, brand, group, today, priceList, user, newListFutureOnly }) {
   if (!Array.isArray(values) || values.length < 2) throw new UserError('ไฟล์ว่างหรือไม่มีข้อมูล');
   if (values.length > 60000) throw new UserError('ข้อมูลมากเกินไป (สูงสุด 60,000 แถว)');
   switch (type) {
-    case 'products': return { type, ...(await upsertProducts(db, productsFlat(values, brand), priceList, today, user)) };
-    case 'cost_price_sheet': return { type, ...(await upsertProducts(db, productsFromCostPriceSheet(values), priceList, today, user)) };
+    case 'products': return { type, ...(await upsertProducts(db, productsFlat(values, brand), priceList, today, user, newListFutureOnly)) };
+    case 'cost_price_sheet': {
+      const sheet = productsFromCostPriceSheet(values);
+      const res = await upsertProducts(db, sheet.products, priceList, today, user, newListFutureOnly);
+      return { type, ...res, costConflicts: sheet.costConflicts.slice(0, 100), costConflictCount: sheet.costConflicts.length };
+    }
     case 'cal_dummy_sheet': return { type, ...(await importBundles(db, values, user)) };
     case 'project_costs': return { type, ...(await importProjectCosts(db, values, group || 'JS')) };
     case 'landed_items': return { type, ...(await importLandedItems(db, values, group || 'JS_OVS')) };

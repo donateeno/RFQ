@@ -142,7 +142,7 @@ function createApp(deps) {
     try {
       const out = await importData(db, {
         type: req.params.type, values: req.body && req.body.values, brand: req.query.brand, group: req.query.group,
-        today: service.todayIso(cfg.timezone), user: 'n8n',
+        today: service.todayIso(cfg.timezone), user: 'n8n', newListFutureOnly: true,
         priceList: req.query.priceList ? { name: String(req.query.priceList), effectiveFrom: req.query.effectiveFrom } : null
       });
       await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT', $1)`, [JSON.stringify({ type: req.params.type, imported: out.imported })]);
