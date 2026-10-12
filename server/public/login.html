@@ -13,8 +13,8 @@
 <body>
   <div class="gate card">
     <div class="brand" style="justify-content:center;margin-bottom:12px"><span class="logo">RFQ</span><span>ขออนุมัติราคาพิเศษ</span></div>
-    <p class="sub">เข้าสู่ระบบด้วยบัญชี Google ของบริษัท (@{{ALLOWED_DOMAIN}})</p>
-    <div id="g_id_onload" data-client_id="{{GOOGLE_CLIENT_ID}}" data-callback="rfqSignIn" data-hd="{{ALLOWED_DOMAIN}}"
+    <p class="sub">เข้าสู่ระบบด้วยบัญชี Google ของบริษัท ({{ALLOWED_DOMAINS}})</p>
+    <div id="g_id_onload" data-client_id="{{GOOGLE_CLIENT_ID}}" data-callback="rfqSignIn"{{HD}}
          data-auto_prompt="false" data-ux_mode="popup"></div>
     <div style="display:flex;justify-content:center;margin:18px 0">
       <div class="g_id_signin" data-type="standard" data-size="large" data-text="signin_with" data-shape="pill" data-logo_alignment="left"></div>

@@ -79,12 +79,14 @@ function createApp(deps) {
     return u;
   }
 
+  const domainText = cfg.allowedDomains.map((d) => '@' + d).join(' หรือ ');
+
   app.post('/auth/google', async (req, res) => {
     try {
       const p = await verifyGoogleToken(String((req.body && req.body.credential) || ''));
-      const domain = String(p.email || '').split('@')[1];
-      if (!p.email_verified || p.hd !== cfg.allowedDomain || domain !== cfg.allowedDomain) {
-        throw new UserError(`อนุญาตเฉพาะบัญชี @${cfg.allowedDomain}`, 403);
+      const domain = String(p.email || '').toLowerCase().split('@')[1];
+      if (!p.email_verified || String(p.hd || '').toLowerCase() !== domain || !cfg.allowedDomains.includes(domain)) {
+        throw new UserError('อนุญาตเฉพาะบัญชี ' + domainText, 403);
       }
       await signIn(req, p.email, p.name);
       res.json({ ok: true });
@@ -97,7 +99,7 @@ function createApp(deps) {
     // Local preview/tests only — never enabled when NODE_ENV=production (see config.js).
     app.get('/auth/dev', async (req, res) => {
       const email = String(req.query.email || '');
-      if (!email.endsWith('@' + cfg.allowedDomain)) return res.status(400).send('bad email');
+      if (!cfg.allowedDomains.includes(email.toLowerCase().split('@')[1])) return res.status(400).send('bad email');
       await signIn(req, email, email.split('@')[0]);
       res.redirect('/' + (req.query.hash ? '#' + req.query.hash : ''));
     });
@@ -108,8 +110,10 @@ function createApp(deps) {
   app.get('/login', (req, res) => {
     const html = fs.readFileSync(path.join(PUBLIC, 'login.html'), 'utf8')
       .replace('{{GOOGLE_CLIENT_ID}}', escAttr(cfg.googleClientId))
-      .replace('{{ALLOWED_DOMAIN}}', escAttr(cfg.allowedDomain))
-      .replace('{{DEV_LOGIN}}', cfg.devLogin ? '<form class="dev" action="/auth/dev"><input name="email" placeholder="someone@' + escAttr(cfg.allowedDomain) + '"><button>Dev login</button></form>' : '');
+      .replace('{{ALLOWED_DOMAINS}}', escAttr(domainText))
+      // Google's hd hint takes one domain only; with several, the server check above does the filtering.
+      .replace('{{HD}}', cfg.allowedDomains.length === 1 ? ' data-hd="' + escAttr(cfg.allowedDomains[0]) + '"' : '')
+      .replace('{{DEV_LOGIN}}', cfg.devLogin ? '<form class="dev" action="/auth/dev"><input name="email" placeholder="someone@' + escAttr(cfg.allowedDomains[0]) + '"><button>Dev login</button></form>' : '');
     res.type('html').send(html);
   });
 

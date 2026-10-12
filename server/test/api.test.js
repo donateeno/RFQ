@@ -60,6 +60,27 @@ test('Google sign-in only accepts verified accounts of the company domain', asyn
   assert.equal(u.name, 'New Person');
 });
 
+test('sign-in: every domain in ALLOWED_DOMAIN may log in; hd must match the email domain', async () => {
+  env.googleTokens.sm = { email: 'Staff@SiamManor.com', email_verified: true, hd: 'siammanor.com', name: 'SM Staff' };
+  env.googleTokens.cross = { email: 'evil@siammanor.com', email_verified: true, hd: 'eve.co.th' };
+  env.googleTokens.unverified = { email: 'x@siammanor.com', email_verified: false, hd: 'siammanor.com' };
+  env.googleTokens.other = { email: 'x@other.co.th', email_verified: true, hd: 'other.co.th' };
+  const post = (credential) => fetch(env.base + '/auth/google', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential }) });
+  assert.equal((await post('cross')).status, 403);
+  assert.equal((await post('unverified')).status, 403);
+  const refused = await post('other');
+  assert.equal(refused.status, 403);
+  assert.match((await refused.json()).error, /@eve\.co\.th หรือ @siammanor\.com/);
+  assert.equal((await post('sm')).status, 200);
+  const u = (await env.db.query('select * from users where email = $1', ['staff@siammanor.com'])).rows[0];
+  assert.equal(u.role, 'SALES');
+  assert.equal(u.can_view_cost, false);
+
+  const login = await (await fetch(env.base + '/login')).text();
+  assert.match(login, /@eve\.co\.th หรือ @siammanor\.com/);
+  assert.doesNotMatch(login, /data-hd=/, 'Google takes one hd only, so none is sent with two domains');
+});
+
 test('bootstrap: groups/channels for everyone, never cost; approver extras only for approvers', async () => {
   const b = await sales.call('getBootstrap');
   assert.deepEqual(b.groups.map((g) => g.id), ['GT', 'BT', 'OFFI', 'JS', 'JS_OVS']);
@@ -249,7 +270,8 @@ test('admin: settings, users, CSV imports are admin-only', async () => {
   assert.equal((await sales.call('getBootstrap')).settings.defaultValidityDays, 14);
   await admin.call('saveSettings', { DEFAULT_VALIDITY_DAYS: 30 });
 
-  await assert.rejects(admin.call('saveUser', { email: 'x@gmail.com', role: 'SUPERVISOR' }), /eve\.co\.th/);
+  await assert.rejects(admin.call('saveUser', { email: 'x@gmail.com', role: 'SUPERVISOR' }), /eve\.co\.th หรือ @siammanor\.com/);
+  await admin.call('saveUser', { email: 'sup.sm@siammanor.com', role: 'SUPERVISOR' });
   await assert.rejects(admin.call('saveUser', { email: ADMIN, role: 'SALES' }), /ตัวเอง/);
   await admin.call('saveUser', { email: SALES2, role: 'SUPERVISOR' });
   assert.equal((await sales2.call('getBootstrap')).user.role, 'SUPERVISOR');

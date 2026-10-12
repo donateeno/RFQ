@@ -31,7 +31,7 @@ docker ps --format 'table {{.Names}}\t{{.Ports}}'
   docker inspect $(docker ps -qf name=traefik) --format '{{.Args}}' | tr ' ' '\n' | grep -E 'entrypoints|certresolver'
   ```
 - If nothing listens on 80/443, set `PROXY=caddy`.
-- If something else owns them (e.g. nginx), set `PROXY=` (empty) and point that proxy at `http://127.0.0.1:3000`.
+- If something else owns them (e.g. the host nginx), set `PROXY=` (empty) and point that proxy at `http://127.0.0.1:3000`. For nginx, see [nginx in front](#nginx-in-front) below.
 
 ## 3. A separate deploy user (keeps AI agents away from production)
 Agents running as your normal user should **not** be in the `docker` group, because docker access is root-equivalent.
@@ -51,7 +51,11 @@ git clone git@github.com:donateeno/RFQ.git /opt/rfq
 
 ## 4. Google sign-in
 1. Go to https://console.cloud.google.com and create a project such as "EVE RFQ".
-2. **APIs & Services → OAuth consent screen**: set User type to **Internal**, so only eve.co.th accounts can sign in.
+2. **APIs & Services → OAuth consent screen**:
+   - If every domain in `ALLOWED_DOMAIN` belongs to the **same** Google Workspace account (for example, siammanor.com added as a secondary domain of eve.co.th), set User type to **Internal**.
+   - If the domains are separate Workspace accounts, set User type to **External** and press **Publish app**. A "Testing" app only admits listed test users.
+     - With only the basic sign-in scopes (email, profile), no Google verification is needed.
+     - The app itself refuses any account outside `ALLOWED_DOMAIN`.
 3. **Credentials → Create credentials → OAuth client ID**:
    - Application type: **Web application**.
    - Authorized JavaScript origins: `https://rfq.<domain>`. No redirect URI is needed.
@@ -67,7 +71,7 @@ bash deploy.sh   # builds, starts, waits for /healthz
 ```
 `COST_VIEWERS` decides who can see cost, gain and exact %MU. It is only set here, on the server; nobody can grant it from inside the app.
 
-Open `https://rfq.<domain>` and sign in. Accounts listed in `BOOTSTRAP_ADMINS` / `BOOTSTRAP_SUPERVISORS` get their roles. Everyone else at eve.co.th joins as SALES automatically.
+Open `https://rfq.<domain>` and sign in. Accounts listed in `BOOTSTRAP_ADMINS` / `BOOTSTRAP_SUPERVISORS` get their roles. Everyone else in an `ALLOWED_DOMAIN` domain joins as SALES automatically.
 
 Firewall: in **hPanel → VPS → Firewall**, allow only 22, 80 and 443. PostgreSQL is never published, and the app is bound to 127.0.0.1.
 
@@ -76,6 +80,30 @@ Backups:
 (crontab -l 2>/dev/null; echo "15 2 * * * /opt/rfq/deploy/backup.sh >> /opt/rfq-backups/backup.log 2>&1") | crontab -
 ```
 Also turn on Hostinger's weekly VPS snapshot.
+
+### nginx in front
+Use this when the host nginx already serves 80/443 (with `PROXY=` empty in `.env`). Create `/etc/nginx/sites-available/rfq`:
+```nginx
+server {
+    listen 80;
+    server_name rfq.<domain>;
+    client_max_body_size 20m;
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}
+```
+Then run:
+```bash
+sudo ln -s /etc/nginx/sites-available/rfq /etc/nginx/sites-enabled/rfq
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d rfq.<domain>   # only once the DNS name resolves to this VPS
+```
+certbot adds the HTTPS server block and the redirect.
 
 ## 6. GitHub: AI review + your approval + auto-deploy
 1. **Claude review token**: on the VPS, run `claude setup-token` (you're signed in to Claude Code there). In GitHub, go to **Settings → Secrets and variables → Actions → New repository secret** and add `CLAUDE_CODE_OAUTH_TOKEN`.

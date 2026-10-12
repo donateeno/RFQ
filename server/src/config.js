@@ -14,7 +14,8 @@ function load(env = process.env) {
     baseUrl: (env.APP_BASE_URL || 'http://localhost:3000').replace(/\/$/, ''),
     sessionSecret: env.SESSION_SECRET || '',
     googleClientId: env.GOOGLE_CLIENT_ID || '',
-    allowedDomain: (env.ALLOWED_DOMAIN || 'eve.co.th').toLowerCase(),
+    // Google Workspace domains that may sign in, e.g. "eve.co.th, siammanor.com"
+    allowedDomains: list(env.ALLOWED_DOMAIN || 'eve.co.th'),
     bootstrapAdmins: list(env.BOOTSTRAP_ADMINS),
     bootstrapSupervisors: list(env.BOOTSTRAP_SUPERVISORS),
     // The only people who may see cost, gain and exact %MU. Set on the server only — not editable in the app.
@@ -26,6 +27,7 @@ function load(env = process.env) {
     devLogin: !production && env.DEV_LOGIN === '1',
     timezone: env.TZ || 'Asia/Bangkok'
   };
+  if (!cfg.allowedDomains.length) throw new Error('ALLOWED_DOMAIN must name at least one domain');
   if (production) {
     const missing = [];
     if (cfg.sessionSecret.length < 32) missing.push('SESSION_SECRET (32+ chars)');

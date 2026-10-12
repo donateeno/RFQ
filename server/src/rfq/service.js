@@ -814,7 +814,9 @@ async function saveUser(ctx, u) {
   const me = admin(ctx);
   u = u || {};
   const email = str(u.email, 200).toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+$/.test(email) || email.split('@')[1] !== ctx.cfg.allowedDomain) throw new UserError(`อีเมลต้องเป็น @${ctx.cfg.allowedDomain}`);
+  if (!/^[^@\s]+@[^@\s]+$/.test(email) || !ctx.cfg.allowedDomains.includes(email.split('@')[1])) {
+    throw new UserError('อีเมลต้องเป็น ' + ctx.cfg.allowedDomains.map((d) => '@' + d).join(' หรือ '));
+  }
   const role = String(u.role || 'SALES').toUpperCase();
   if (!ROLES.includes(role)) throw new UserError('Role ไม่ถูกต้อง');
   const active = u.active !== false;

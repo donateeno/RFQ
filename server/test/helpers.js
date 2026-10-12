@@ -17,7 +17,7 @@ async function startApp() {
   await migrate(db);
   const cfg = load({
     NODE_ENV: 'test', DEV_LOGIN: '1', DATABASE_URL: DB_URL, GOOGLE_CLIENT_ID: 'test-client', INTEGRATION_TOKEN: 'test-token',
-    BOOTSTRAP_ADMINS: 'akrawat@eve.co.th, admin2@eve.co.th', BOOTSTRAP_SUPERVISORS: 'pak.m@eve.co.th', COST_VIEWERS: 'akrawat@eve.co.th', APP_BASE_URL: 'https://rfq.example.com'
+    ALLOWED_DOMAIN: 'eve.co.th, SiamManor.com', BOOTSTRAP_ADMINS: 'akrawat@eve.co.th, admin2@eve.co.th', BOOTSTRAP_SUPERVISORS: 'pak.m@eve.co.th', COST_VIEWERS: 'akrawat@eve.co.th', APP_BASE_URL: 'https://rfq.example.com'
   });
   await seed(db, cfg);
   const mail = [];

@@ -4,7 +4,7 @@ Sales staff check a special price and request approval. Supervisors approve requ
 
 | Who | Can do |
 |---|---|
-| **Sales** (anyone @eve.co.th) | Price check with the indicator only · multi-item requests · build & share bundle sets (ชุดเซ็ต) · my requests · approved prices still valid |
+| **Sales** (anyone in `ALLOWED_DOMAIN`: @eve.co.th, @siammanor.com) | Price check with the indicator only · multi-item requests · build & share bundle sets (ชุดเซ็ต) · my requests · approved prices still valid |
 | **Supervisor** | Approval inbox with net price, **MU band** (e.g. 20–25%) and history — never cost · bulk approve/reject (not their own) · all requests + CSV · dashboard |
 | **Admin** | Settings, users & roles, price lists, CSV imports, audit log |
 | **Cost viewer** (`COST_VIEWERS`, server setting only — currently the owner) | Additionally sees cost, gain and exact %MU everywhere |
@@ -37,7 +37,7 @@ Pick a **price group**, then a **channel**. Each channel carries its own formula
 To add a channel or group: edit the JSON in a pull request. The AI reviews it, you merge, and it deploys. No code change is needed.
 
 ## Architecture
-- **App**: Node.js 22 + Express + PostgreSQL 16, in Docker on the Hostinger VPS. Google sign-in, restricted to eve.co.th.
+- **App**: Node.js 22 + Express + PostgreSQL 16, in Docker on the Hostinger VPS. Google sign-in, restricted to the `ALLOWED_DOMAIN` list (eve.co.th, siammanor.com).
 - **n8n**: sends the emails, syncs the cost master from Google Sheets daily, and copies all requests into a Google Sheet every 15 minutes for viewing.
 - **GitHub**: CI (tests on real PostgreSQL), Claude Code review on every PR, your merge = approval, auto-deploy over SSH.
 - Room to grow: static pages go in `server/public/`. Future modules (e.g. document control) go in `server/src/<module>/` with their own migrations, and share the same sign-in, roles and audit log.
