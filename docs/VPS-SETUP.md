@@ -106,7 +106,7 @@ Import each file in **n8n → Workflows → Import from file**. Then set its cre
 | `rfq-products-sync.json` | Google Sheets OAuth2, the same Header Auth | Spreadsheet ID of the GT file, `rfq.<domain>` |
 | `rfq-sheets-mirror.json` | Google Sheets OAuth2, Header Auth | A spreadsheet with a tab `APP_Requests_Mirror` (it contains cost — share it with no one but the cost viewer) |
 | `github-pr-reviewed.json` | Header Auth "GitHub → n8n token", Gmail | — |
-| `rfq-smg-sync.json` | Google Sheets OAuth2, Google Drive OAuth2, the same Header Auth (also on its webhook) | IDs of *COST UPDATE 2021 for import* and *SMG PRICELIST NATIONWIDE*, `rfq.<domain>`. Copy the webhook's **production URL** into `SYNC_WEBHOOK_URL` |
+| `rfq-smg-sync.json` | Google Sheets OAuth2, Google Drive OAuth2, the same Header Auth (also on its webhook) | IDs of *COST UPDATE 2021 for import*, *SMG PRICELIST NATIONWIDE* and *Customer Price Mapping Template* (`PUT_MAPPING_FILE_ID_HERE`), `rfq.<domain>`. Copy the webhook's **production URL** into `SYNC_WEBHOOK_URL` |
 
 ## 8. Bring in the data
 
@@ -124,6 +124,8 @@ Import each file in **n8n → Workflows → Import from file**. Then set its cre
 The selling price per channel works like MASTER columns H (GT), I (DGT) and R (BT): the channel's hot price, otherwise the Nationwide promotion price, otherwise MASTER's old special price. Online channels use DGT. Showroom, Outlet and GT use GT. BT uses BT. Each sync compares the result with MASTER's own H/I/R and lists any differences in ตั้งค่า.
 
 Every new period: create the period first in **ตั้งค่า → รอบราคา → สร้างรอบราคา**, using the name in the MASTER file title (e.g. `OCT26-JAN27`) and its start date. Until it exists, the sync is refused and nothing changes. If a sheet's columns move, the sync stops with the column it expected. Foster and Joseph Space keep their own imports below.
+
+**Customer price lookup (same workflow, second branch).** n8n also reads the *Customer Price Mapping Template* (tabs Term Library, Customer Groups, Group Terms, Channel Map, Customer Map, and Active Customers from row 6) and replaces the data behind **ราคาตามลูกค้า**. Each tab's header row is checked; rows that can't be used (an unknown term code, a wrong method or price tier, a % term without a value) are skipped and listed in ตั้งค่า → ข้อมูลราคาตามลูกค้า.
 
 **Other data (one time, as admin → ตั้งค่า → นำเข้าข้อมูล)**
 In each Google Sheet tab, use **File → Download → CSV**, then upload it with the matching type:

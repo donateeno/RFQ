@@ -15,6 +15,10 @@ Sales staff check a special price and request approval. Supervisors approve requ
 
 **SMG catalogue (EVE / Evercook / Excel):** n8n syncs barcode, model, cost and prices daily from the cost file, the Nationwide pricelist and the SMG MASTER of the current period. Each channel sells at its own price tier: GT, DGT (online) or BT hot price, otherwise the Nationwide promotion price. Discontinued (OR), exclusive (EX), gift (G) and made-to-order (MTO) items carry a warning. Sales can search by model or barcode.
 
+**Customer price lookup (ราคาตามลูกค้า):** sales pick a customer (SAP code or name) or a customer group, plus a product. The app shows the gross price for that group's price tier, then every discount and fee in order (GP, MKT fee, DC fee, platform fees, customer-only terms, per-unit and per-order amounts), the net price with and without VAT, and the total. The data comes from the *Customer Price Mapping* Google Sheet (term library, customer groups, group terms, SAP channel → group, customer overrides, active customers), synced by n8n together with the SMG catalogue. No cost is shown.
+
+**Layout:** a left main menu grouped by module, like the SAP Business One main menu: ราคาและการขาย, คำขออนุมัติราคา, ผู้อนุมัติ and ผู้ดูแลระบบ. On phones it opens as a drawer.
+
 **Bundles:** anyone can combine 2–5 items into a set (like the old DUMMY SET tab). Everyone can use it. Its list price and cost are the sums of its components in the current price list.
 
 ## Price groups → channels

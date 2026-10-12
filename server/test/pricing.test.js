@@ -5,7 +5,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { calculate, landedCost, indicatorFor, resolveDiscounts, roundUpTo, resolveTierPrice, PRICE_TIERS } = require('../src/pricing');
+const { calculate, landedCost, indicatorFor, resolveDiscounts, roundUpTo, resolveTierPrice, PRICE_TIERS, applyTerms } = require('../src/pricing');
 const { loadPriceGroups, validatePriceGroups } = require('../src/seed');
 
 const groups = loadPriceGroups();
@@ -132,6 +132,19 @@ test('SMG MASTER OCT26-JAN27 columns H / I / R: hot price, else Nationwide promo
   assert.deepEqual(tiers({ inHot: true, hot: { GT: null, DGT: null, BT: null }, inNationwide: false, oldSpecial: 1190 }), [null, null, null]);
   // OVEN 35 ลิตร รุ่น BT135 (NOTFOUND, 0): no price
   assert.deepEqual(tiers({ inHot: false, inNationwide: false, oldSpecial: 0 }), [null, null, null]);
+});
+
+test('customer price waterfall (Customer Price Mapping, Price Check): BT 20% + MKT 5% + DC 5.04% = 27.8304%', () => {
+  // HOB HP35-1Q/FGB at BT HOTPRICE 1,590 (SMG MASTER OCT26-JAN27 R1459); BT terms from SMG MASTER columns T, U, V
+  const r = applyTerms(1590, 1, [{ method: 'PCT_RUNNING', pct: 0.2 }, { method: 'PCT_RUNNING', pct: 0.05 }, { method: 'PCT_RUNNING', pct: 0.0504 }]);
+  assert.deepEqual(r.steps.map((s) => [s.deduction, s.after]), [[318, 1272], [63.6, 1208.4], [60.9, 1147.5]]);
+  assert.equal(r.net, 1147.5);
+  assert.equal(r.totalDiscount, 0.278304, 'same as the fixed GP + MKT FEE (BT) in price-groups.json');
+  // the other methods: % of gross, baht per unit, baht per order spread over the quantity
+  const m = applyTerms(1000, 4, [{ method: 'PCT_GROSS', pct: 0.1 }, { method: 'PCT_RUNNING', pct: 0.1 }, { method: 'THB_UNIT', thb: 50 }, { method: 'THB_ORDER', thb: 200 }]);
+  assert.deepEqual(m.steps.map((s) => s.after), [900, 810, 760, 710]);
+  assert.equal(m.totalDiscount, 0.29);
+  assert.equal(applyTerms(1000, 1, []).net, 1000);
 });
 
 test('ROUNDUP to thousands matches Excel', () => {

@@ -10,7 +10,7 @@
  *                       factory_rmb/FactoryRMB, exch_rate/ExCh. Rate, bp_disc/BP Disc., incoterm, misc_charge
  *   GT.EVE_RFQ | GT.FOSTER_RFQ | BT.EVE_RFQ | BT.FOSTER_RFQ | OFFI_RFQ   old request tabs
  */
-const { calculate, UserError, PRICE_TIERS, resolveTierPrice } = require('../pricing');
+const { calculate, UserError, PRICE_TIERS, TERM_METHODS, resolveTierPrice } = require('../pricing');
 const { tx } = require('../db');
 const { getSettings, getCatalog, lookupItem } = require('./catalog');
 
@@ -518,11 +518,130 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
   };
 }
 
+// ---------------------------------------------------------------- customer price mapping (n8n, Google Sheet template)
+
+/** Tabs of the "Customer Price Mapping Template" sheet and the header expected at each column used. */
+const MAPPING_SHEETS = {
+  terms: { label: "'Term Library'!A1:K", cols: {
+    code: [0, 'รหัสเงื่อนไข (Term code)'], name: [1, 'ชื่อเงื่อนไข'], nameEn: [2, 'Name (EN)'], category: [3, 'หมวด'], method: [4, 'วิธีคำนวณ'],
+    basis: [5, 'ฐานที่ใช้คิด'], borneBy: [6, 'ผู้รับภาระ'], onInvoice: [7, 'หักในใบกำกับภาษี?'], inMuNet: [8, 'นับรวมในราคาสุทธิเพื่อคิด %MU?'],
+    reference: [9, 'ค่าอ้างอิงที่พบ'], source: [10, 'ที่มา'] } },
+  groups: { label: "'Customer Groups'!A1:H", cols: {
+    code: [0, 'รหัสกลุ่ม'], name: [1, 'ชื่อกลุ่มลูกค้า'], tier: [2, 'ราคาฐาน (Price tier)'], credit: [3, 'เครดิตเทอม (วัน)'], approver: [6, 'ผู้อนุมัติ'], note: [7, 'หมายเหตุ'] } },
+  groupTerms: { label: "'Group Terms'!A1:K", cols: {
+    owner: [0, 'รหัสกลุ่ม หรือรหัสลูกค้า'], seq: [1, 'ลำดับการหัก'], term: [2, 'รหัสเงื่อนไข'], pct: [5, 'ค่า (%)'], thb: [6, 'ค่า (บาท)'],
+    scope: [7, 'ใช้กับสินค้า (ALL หรือบาร์โค้ด)'], from: [8, 'มีผลตั้งแต่'], to: [9, 'สิ้นสุด'], note: [10, 'หมายเหตุ / ที่มา'] } },
+  channels: { label: "'Channel Map'!A1:B", cols: { channel: [0, 'ช่องทาง SAP'], group: [1, 'กลุ่มลูกค้าเริ่มต้น'] } },
+  customerMap: { label: "'Customer Map'!A1:D", cols: { code: [0, 'รหัสลูกค้า (SAP)'], group: [3, 'กลุ่มลูกค้า (แทนกลุ่มของช่องทาง)'] } },
+  customers: { label: "'Active Customers'!A6:H", cols: {
+    code: [0, 'รหัสลูกค้า'], name: [1, 'ชื่อลูกค้า'], channel: [2, 'ช่องทาง SAP'], employee: [3, 'พนักงานขาย'], last: [7, 'ซื้อล่าสุด'] } }
+};
+const PRICE_TIER_CODES = ['GT', 'DGT', 'BT', 'NTW', 'FOSTER', 'JS'];
+
+function mappingRows(sheets, name) {
+  const spec = MAPPING_SHEETS[name];
+  const values = sheets && sheets[name];
+  if (!Array.isArray(values) || !values.length) throw new UserError(`ไม่มีข้อมูลจาก ${spec.label}`);
+  const head = values[0] || [];
+  const wrong = Object.values(spec.cols).filter(([i, h]) => normHead(head[i]) !== normHead(h))
+    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${h}" แต่พบ "${cell(head, i)}"`);
+  if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับแม่แบบ — ${wrong.join('; ')}`);
+  return values.slice(1).map((r) => {
+    const o = {};
+    for (const [k, [i]] of Object.entries(spec.cols)) o[k] = cell(r, i);
+    return o;
+  });
+}
+
+/**
+ * Replaces the whole customer price mapping (terms, groups, group terms, channel map, customers) in one
+ * transaction. Rows that cannot be used are skipped and listed in `errors`; nothing here holds cost.
+ */
+async function importCustomerPricing(db, sheets) {
+  const errors = [];
+  const upper = (v) => String(v || '').trim().toUpperCase();
+  const terms = new Map();
+  mappingRows(sheets, 'terms').forEach((r, i) => {
+    const code = upper(r.code);
+    if (!code) return;
+    const method = upper(r.method);
+    if (!TERM_METHODS.includes(method)) { errors.push(`Term Library แถว ${i + 2}: ${code} วิธีคำนวณ "${r.method}" ไม่ถูกต้อง`); return; }
+    if (!terms.has(code)) terms.set(code, Object.assign({}, r, { code, method }));
+  });
+  const groups = new Map();
+  mappingRows(sheets, 'groups').forEach((r, i) => {
+    const code = upper(r.code);
+    if (!code) return;
+    const tier = upper(r.tier);
+    if (tier && !PRICE_TIER_CODES.includes(tier)) { errors.push(`Customer Groups แถว ${i + 2}: ${code} ราคาฐาน "${r.tier}" ไม่ถูกต้อง`); return; }
+    const credit = toNum(r.credit);
+    if (!groups.has(code)) groups.set(code, Object.assign({}, r, { code, tier, credit: credit === null ? null : Math.round(credit) }));
+  });
+  const groupTerms = [];
+  mappingRows(sheets, 'groupTerms').forEach((r, i) => {
+    const owner = upper(r.owner);
+    if (!owner) return;
+    const at = `Group Terms แถว ${i + 2}`;
+    const term = terms.get(upper(r.term));
+    if (!term) { errors.push(`${at}: ไม่พบรหัสเงื่อนไข "${r.term}" ใน Term Library`); return; }
+    const pct = toNum(r.pct);
+    const thb = toNum(r.thb);
+    if (term.method.startsWith('PCT') && (pct === null || pct < -1 || pct > 1)) { errors.push(`${at}: ${term.code} ต้องมีค่า (%) ระหว่าง -100% ถึง 100%`); return; }
+    if (term.method.startsWith('THB') && thb === null) { errors.push(`${at}: ${term.code} ต้องมีค่า (บาท)`); return; }
+    const from = r.from ? parseSheetDate(r.from) : null;
+    const to = r.to ? parseSheetDate(r.to) : null;
+    if ((r.from && !from) || (r.to && !to)) { errors.push(`${at}: วันที่ไม่ถูกต้อง`); return; }
+    groupTerms.push({ owner, seq: Math.round(toNum(r.seq) || 0), term: term.code, pct, thb, scope: (r.scope || 'ALL').trim().slice(0, 200), from, to, note: r.note });
+  });
+  const channels = new Map();
+  mappingRows(sheets, 'channels').forEach((r) => { if (r.channel) channels.set(r.channel, upper(r.group)); });
+  const overrides = new Map();
+  mappingRows(sheets, 'customerMap').forEach((r) => { if (r.code) overrides.set(r.code, upper(r.group)); });
+  const customers = new Map();
+  mappingRows(sheets, 'customers').forEach((r) => { if (r.code && !customers.has(r.code)) customers.set(r.code, r); });
+  // Customers only in Customer Map (no sales in the window) can still be priced.
+  for (const code of overrides.keys()) if (!customers.has(code)) customers.set(code, { code, name: '', channel: '', employee: '', last: '' });
+
+  const usedGroups = [...channels.values(), ...overrides.values()].filter((g) => g && !groups.has(g));
+  if (usedGroups.length) errors.push(`กลุ่มที่ใช้แต่ไม่มีใน Customer Groups: ${[...new Set(usedGroups)].join(', ')}`);
+
+  await tx(db, async (c) => {
+    await c.query('delete from group_terms');
+    await c.query('delete from price_terms');
+    await c.query('delete from customer_groups');
+    await c.query('delete from sap_channel_groups');
+    await c.query('delete from customers');
+    for (const t of terms.values()) {
+      await c.query(`insert into price_terms (code, name, name_en, category, method, basis, borne_by, on_invoice, in_mu_net, reference, source)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [t.code, t.name, t.nameEn, t.category, t.method, t.basis, t.borneBy, t.onInvoice, t.inMuNet, t.reference, t.source]);
+    }
+    for (const g of groups.values()) {
+      await c.query('insert into customer_groups (code, name, price_tier, credit_days, approver, note) values ($1, $2, $3, $4, $5, $6)',
+        [g.code, g.name, g.tier, g.credit, g.approver, g.note]);
+    }
+    for (const t of groupTerms) {
+      await c.query(`insert into group_terms (owner_code, seq, term_code, pct, thb, scope, valid_from, valid_to, note)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [t.owner, t.seq, t.term, t.pct, t.thb, t.scope, t.from, t.to, t.note]);
+    }
+    for (const [ch, g] of channels) await c.query('insert into sap_channel_groups (sap_channel, group_code) values ($1, $2)', [ch, g]);
+    for (const r of customers.values()) {
+      await c.query(`insert into customers (code, name, sap_channel, sales_employee, last_month, override_group) values ($1, $2, $3, $4, $5, $6)`,
+        [r.code, r.name, r.channel, r.employee, r.last, overrides.get(r.code) || '']);
+    }
+  });
+  return {
+    imported: customers.size, terms: terms.size, groups: groups.size, groupTerms: groupTerms.length, channels: channels.size,
+    overrides: overrides.size, errors: errors.slice(0, 100), errorCount: errors.length
+  };
+}
+
 // ---------------------------------------------------------------- entry point
 
 /** @param {{newListFutureOnly?: boolean}} opts newListFutureOnly: set for n8n (see resolvePriceList) */
 async function importData(db, { type, values, sheets, brand, group, today, priceList, user, newListFutureOnly }) {
   if (type === 'smg_catalog') return { type, ...(await importSmgCatalog(db, sheets, priceList, today, user, newListFutureOnly)) };
+  if (type === 'customer_pricing') return { type, ...(await importCustomerPricing(db, sheets)) };
   if (!Array.isArray(values) || values.length < 2) throw new UserError('ไฟล์ว่างหรือไม่มีข้อมูล');
   if (values.length > 60000) throw new UserError('ข้อมูลมากเกินไป (สูงสุด 60,000 แถว)');
   switch (type) {

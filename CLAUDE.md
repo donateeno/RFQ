@@ -10,6 +10,7 @@ supervisors approve and monitor margin (%MU). Thai UI, Thai business terms.
   - `src/rfq/importers.js` — CSV / n8n imports (cost masters, legacy sheet tabs). `src/rfq/notifications.js` — email payloads for n8n.
   - Price lists: products belong to a `price_lists` period; each brand uses its newest effective list. Pending requests are re-priced on approval; approved prices keep their snapshot until their end date. Price-list names are case-insensitive (`name_norm`); a new list always needs an explicit date.
   - SMG catalogue (`smg_catalog` import, n8n `rfq-smg-sync.json`): products keyed by barcode with `price_gt/price_dgt/price_bt` (`tiered`); channels pick a tier via `priceTier`; the rule is `pricing.resolveTierPrice` (mirrors SMG MASTER H/I/R).
+  - Customer price lookup (`customer_pricing` import from the Customer Price Mapping sheet; tables `price_terms`, `customer_groups`, `group_terms`, `sap_channel_groups`, `customers`): customer → group → price tier → ordered terms via `pricing.applyTerms`. RPC `customerPriceCheck` / `searchCustomers`; returns no cost.
   - Bundles (`bundles`, `bundle_items`): user-built sets priced live from the current list.
   - `migrations/*.sql` — append-only. `public/` — static browser app (no build step, ES5-style, no framework).
   - `test/` — `node:test` against a real PostgreSQL (`TEST_DATABASE_URL`).

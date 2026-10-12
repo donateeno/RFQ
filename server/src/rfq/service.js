@@ -7,9 +7,9 @@
  *              SUPERVISOR  + net prices and the MU band (e.g. "20–25%"), never cost/gain/exact %MU
  *              cost viewer + cost, gain, exact %MU   (users.can_view_cost, set from COST_VIEWERS env only)
  */
-const { calculate, resolveDiscounts, round, muBand, INDICATOR, PRICE_TIERS, UserError } = require('../pricing');
+const { calculate, resolveDiscounts, round, muBand, INDICATOR, PRICE_TIERS, applyTerms, UserError } = require('../pricing');
 const { tx } = require('../db');
-const { getSettings, getCatalog, getChannel, lookupItem, landedFromRow, priceContext } = require('./catalog');
+const { getSettings, getCatalog, getChannel, lookupItem, landedFromRow, priceContext, productIn } = require('./catalog');
 const { importData, parseCsv } = require('./importers');
 const notifyMsg = require('./notifications');
 
@@ -227,7 +227,9 @@ async function getBootstrap(ctx) {
     user: { email: user.email, name: user.name, role: user.role, canApprove: user.role !== 'SALES', isAdmin: user.role === 'ADMIN', canSeeCost: canSeeCost(user) },
     groups: catalog.map((g) => ({ id: g.id, name: g.name, description: g.description, costSource: g.costSource, channels: g.channels })),
     settings: { defaultValidityDays: settings.DEFAULT_VALIDITY_DAYS, maxValidityDays: settings.MAX_VALIDITY_DAYS },
-    products, bundles, projects, landed, customers, priceLists, today
+    products, bundles, projects, landed, customers, priceLists, today,
+    customerGroups: (await db.query('select code, name, price_tier from customer_groups order by code')).rows
+      .map((g) => ({ code: g.code, name: g.name, tier: g.price_tier }))
   };
   if (out.user.canApprove) {
     out.pendingCount = Number((await db.query(`select count(*) from requests where status = 'Pending'`)).rows[0].count);
@@ -330,6 +332,104 @@ async function guardPriceCheck(ctx, settings, channel, rawKey, p) {
     const to = (await db.query(`select email from users where active and (role = 'ADMIN' or can_view_cost) order by email`)).rows.map((r) => r.email);
     ctx.notify(notifyMsg.priceCheckAlert(ctx.cfg, user, channel, key, detail.prices, to));
   }
+}
+
+// ---------------------------------------------------------------- customer price lookup (ราคาตามลูกค้า)
+
+/** Customers by code or name for the picker (anyone signed in). */
+async function searchCustomers(ctx, q) {
+  const words = String(q || '').trim().toLowerCase().split(/\s+/).filter(Boolean).slice(0, 4);
+  if (!words.length) return [];
+  const params = [];
+  const where = words.map((w) => { params.push('%' + w.replace(/[\\%_]/g, '\\$&') + '%'); return `lower(c.code || ' ' || c.name) like $${params.length}`; });
+  return (await ctx.db.query(
+    `select c.code, c.name, c.sap_channel, coalesce(nullif(c.override_group, ''), m.group_code, '') as group_code
+     from customers c left join sap_channel_groups m on m.sap_channel = c.sap_channel
+     where ${where.join(' and ')} order by c.code limit 20`, params)).rows
+    .map((r) => ({ code: r.code, name: r.name, channel: r.sap_channel, group: r.group_code }));
+}
+
+/** Price tier → where the gross price comes from in the current price list. */
+const TIER_SOURCE = { GT: ['EVE', 'GT'], DGT: ['EVE', 'DGT'], BT: ['EVE', 'BT'], NTW: ['EVE', null], FOSTER: ['FOSTER', null] };
+
+/**
+ * "What does customer X pay for product Y?": customer → group (own override, else its SAP channel's
+ * default group) → price tier → gross price from the current price list → the group's and the customer's
+ * terms in order (pricing.applyTerms). Returns no cost.
+ * @param {{customerCode?:string, groupCode?:string, productKey:string, qty?:number, grossPrice?:number, date?:string}} payload
+ *   grossPrice is used only when the product has no price for the tier (shown as typed by the user).
+ */
+async function customerPriceCheck(ctx, payload) {
+  const { db, cfg } = ctx;
+  payload = payload || {};
+  const date = isIsoDate(payload.date) ? payload.date : todayIso(cfg.timezone);
+  const qty = payload.qty === undefined || payload.qty === '' ? 1 : num(payload.qty);
+  if (!(qty >= 1) || !Number.isInteger(qty) || qty > 1000000) throw new UserError('จำนวนต้องเป็นเลขจำนวนเต็ม ≥ 1');
+
+  let customer = null;
+  let groupCode = str(payload.groupCode, 60).toUpperCase();
+  const code = str(payload.customerCode, 60);
+  if (code) {
+    const r = (await db.query(
+      `select c.*, m.group_code as channel_group from customers c left join sap_channel_groups m on m.sap_channel = c.sap_channel
+       where c.code = $1`, [code])).rows[0];
+    if (!r) throw new UserError('ไม่พบรหัสลูกค้า ' + code, 404);
+    customer = { code: r.code, name: r.name, channel: r.sap_channel, salesEmployee: r.sales_employee, lastMonth: r.last_month,
+      groupFrom: r.override_group ? 'ลูกค้า (Customer Map)' : 'ช่องทาง SAP (Channel Map)' };
+    groupCode = (r.override_group || r.channel_group || '').toUpperCase();
+    if (!groupCode) throw new UserError(`ลูกค้า ${r.code} ยังไม่ได้กำหนดกลุ่ม (ช่องทาง SAP: ${r.sap_channel || '-'})`);
+  }
+  if (!groupCode) throw new UserError('กรุณาเลือกลูกค้าหรือกลุ่มลูกค้า');
+  const g = (await db.query('select * from customer_groups where code = $1', [groupCode])).rows[0];
+  if (!g) throw new UserError('ไม่พบกลุ่มลูกค้า ' + groupCode, 404);
+  const group = { code: g.code, name: g.name, tier: g.price_tier, creditDays: g.credit_days };
+
+  const key = str(payload.productKey, 200);
+  if (!key) throw new UserError('กรุณาระบุสินค้า');
+  let product = null;
+  let gross = null;
+  const src = TIER_SOURCE[g.price_tier];
+  if (src) {
+    const pc = (await priceContext(db, date))[src[0]] || {};
+    const p = pc.current ? await productIn(db, pc.current.id, src[0], key) : null;
+    if (p) {
+      gross = p.tiered && src[1] ? p['price_' + src[1].toLowerCase()] : p.normal_price;
+      product = { key: p.key, name: p.name, barcode: p.barcode || '', status: p.status || '', saleChannel: p.sale_channel || '', listPrice: p.list_price, priceList: pc.current.name };
+    }
+  }
+  const flags = [];
+  let grossSource = 'catalog';
+  if (!(gross > 0)) {
+    const typed = num(payload.grossPrice);
+    if (!(typed > 0)) {
+      throw new UserError(product
+        ? `${product.key} ไม่มีราคาฐาน ${g.price_tier} ในรอบราคา ${product.priceList} — กรอกราคาตั้งเองเพื่อคำนวณ`
+        : `ไม่พบ "${key}" ในรายการราคา${src ? ' ' + src[0] : ''}${g.price_tier ? '' : ' (กลุ่มนี้ยังไม่กำหนดราคาฐาน)'} — กรอกราคาตั้งเองเพื่อคำนวณ`, 422);
+    }
+    if (typed > 100000000) throw new UserError('ราคาตั้งสูงผิดปกติ');
+    gross = typed;
+    grossSource = 'typed';
+    flags.push('ราคาตั้งกรอกเอง (ไม่ได้มาจากรายการราคา)');
+  }
+  if (product && STATUS_FLAGS[product.status]) flags.push(STATUS_FLAGS[product.status]);
+
+  const scopeKeys = [key.toUpperCase(), product ? product.key.toUpperCase() : '', product ? product.barcode : ''].filter(Boolean);
+  const terms = (await db.query(
+    `select t.seq, t.term_code, t.pct, t.thb, t.scope, t.note, t.owner_code, p.name, p.method, p.category
+     from group_terms t join price_terms p on p.code = t.term_code
+     where upper(t.owner_code) = any($1::text[])
+       and (t.scope = '' or upper(t.scope) = 'ALL' or upper(t.scope) = any($2::text[]))
+       and (t.valid_from is null or t.valid_from <= $3) and (t.valid_to is null or t.valid_to >= $3)
+     order by t.seq, t.id`,
+    [[group.code, customer ? customer.code.toUpperCase() : ''].filter(Boolean), scopeKeys, date])).rows
+    .map((t) => ({ seq: t.seq, code: t.term_code, name: t.name, method: t.method, category: t.category, pct: t.pct, thb: t.thb,
+      scope: t.scope, note: t.note, forCustomer: !!customer && t.owner_code.toUpperCase() === customer.code.toUpperCase() }));
+  const w = applyTerms(gross, qty, terms);
+  const vat = (await getSettings(db)).VAT_RATE;
+  return {
+    date, qty, customer, group, product, productKey: product ? product.key : key, gross, grossSource, flags,
+    steps: w.steps, net: w.net, netExVat: round(w.net / (1 + vat), 2), total: round(w.net * qty, 2), totalDiscount: w.totalDiscount, vatRate: vat
+  };
 }
 
 async function submitRequest(ctx, payload) {
@@ -613,6 +713,7 @@ async function getAdminInfo(ctx) {
     },
     priceCheckAlerts: await priceCheckAlerts(db, await getSettings(db)),
     catalogSync: await catalogSyncStatus(db),
+    customerPricing: await customerPricingStatus(db),
     syncConfigured: !!ctx.cfg.syncWebhookUrl,
     recentLog: (await q('select at, user_email, action, req_ids, detail from audit_log order by at desc limit 30')).map((l) => ({
       at: l.at.toISOString(), user: l.user_email, action: l.action, ids: l.req_ids.slice(0, 5).join(', ') + (l.req_ids.length > 5 ? ' …' : ''), detail: JSON.stringify(l.detail)
@@ -631,6 +732,20 @@ async function catalogSyncStatus(db) {
     withCost: d.withCost || 0, withoutCost: d.withoutCost || 0, notForSale: d.notForSale || 0, blankSaleStatus: d.blankSaleStatus || 0,
     statuses: d.statuses || {}, masterMismatchCount: d.masterMismatchCount || 0, masterMismatches: d.masterMismatches || [],
     duplicateBarcodes: d.duplicateBarcodes || [], badBarcodes: d.badBarcodes || 0
+  };
+}
+
+/** Last import of the Customer Price Mapping sheet and what is loaded now. */
+async function customerPricingStatus(db) {
+  const r = (await db.query(`select at, action, detail from audit_log where action in ('IMPORT', 'IMPORT_FAILED')
+    and detail->>'type' = 'customer_pricing' order by at desc limit 1`)).rows[0];
+  const n = async (t) => Number((await db.query(`select count(*) from ${t}`)).rows[0].count);
+  const d = (r && r.detail) || {};
+  return {
+    at: r ? r.at.toISOString() : '', ok: r ? r.action === 'IMPORT' : null, error: d.error || '', errors: d.errors || [], errorCount: d.errorCount || 0,
+    customers: await n('customers'), groups: await n('customer_groups'), terms: await n('price_terms'), groupTerms: await n('group_terms'),
+    ungrouped: Number((await db.query(`select count(*) from customers c left join sap_channel_groups m on m.sap_channel = c.sap_channel
+      where coalesce(nullif(c.override_group, ''), m.group_code, '') = ''`)).rows[0].count)
   };
 }
 
@@ -839,7 +954,8 @@ module.exports = {
   rpc: {
     getBootstrap, priceCheck, submitRequest, listMyRequests, listRequests, searchApprovedPrices, getLineContext,
     decideRequests, cancelMyRequests, getDashboard, getAdminInfo, saveSettings, saveUser, importCsv,
-    createPriceList, savePriceList, deletePriceList, createBundle, deleteBundle, requestCatalogSync
+    createPriceList, savePriceList, deletePriceList, createBundle, deleteBundle, requestCatalogSync,
+    searchCustomers, customerPriceCheck
   },
   // internal
   todayIso, STATUS

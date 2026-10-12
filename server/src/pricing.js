@@ -152,4 +152,33 @@ function resolveTierPrice(p) {
   return Number(v) > 0 ? Number(v) : null;
 }
 
-module.exports = { INDICATOR, FORMULAS, COST_SOURCES, PRICE_TIERS, resolveTierPrice, round, netIncVat, indicatorFor, muBand, calculate, landedCost, roundUpTo, resolveDiscounts, UserError };
+const TERM_METHODS = ['PCT_RUNNING', 'PCT_GROSS', 'THB_UNIT', 'THB_ORDER'];
+
+/**
+ * Customer price waterfall (Customer Price Mapping template, tab Price Check): starting from the gross
+ * price, each term in order takes
+ *   PCT_RUNNING  pct of the price left after the previous step
+ *   PCT_GROSS    pct of the gross price
+ *   THB_UNIT     thb per unit
+ *   THB_ORDER    thb per order, spread over qty
+ * @param {number} gross
+ * @param {number} qty
+ * @param {{method:string, pct?:number|null, thb?:number|null}[]} terms  already in order
+ */
+function applyTerms(gross, qty, terms) {
+  let price = Number(gross);
+  const steps = (terms || []).map((t) => {
+    const pct = Number(t.pct) || 0;
+    const thb = Number(t.thb) || 0;
+    let d = 0;
+    if (t.method === 'PCT_RUNNING') d = price * pct;
+    else if (t.method === 'PCT_GROSS') d = gross * pct;
+    else if (t.method === 'THB_UNIT') d = thb;
+    else if (t.method === 'THB_ORDER') d = qty > 0 ? thb / qty : 0;
+    price -= d;
+    return Object.assign({}, t, { deduction: round(d, 2), after: round(price, 2) });
+  });
+  return { steps, net: round(price, 2), totalDiscount: gross > 0 ? round(1 - price / gross, 6) : 0 };
+}
+
+module.exports = { INDICATOR, FORMULAS, COST_SOURCES, PRICE_TIERS, TERM_METHODS, resolveTierPrice, applyTerms, round, netIncVat, indicatorFor, muBand, calculate, landedCost, roundUpTo, resolveDiscounts, UserError };

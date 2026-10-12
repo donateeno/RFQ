@@ -164,33 +164,78 @@
   function groupChip(r) { var g = group(r.groupId); return '<span class="group-chip">' + esc(g ? g.name : r.groupId) + '</span>'; }
 
   // ================= shell & routing =================
-  function routes() {
-    var r = [
-      { id: 'check', label: 'ตรวจราคา' },
-      { id: 'new', label: 'ขออนุมัติราคา' },
-      { id: 'mine', label: 'คำขอของฉัน' },
-      { id: 'approved', label: 'ราคาที่อนุมัติแล้ว' },
-      { id: 'bundles', label: 'ชุดเซ็ต' }
+  var ICON = {
+    price: '<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+    request: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
+    approve: '<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>',
+    admin: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+    chev: '<path d="M9 6l6 6-6 6"/>'
+  };
+  function icon(name, cls) {
+    return '<svg class="' + (cls || 'ico') + '" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICON[name] + '</svg>';
+  }
+  /** Main menu modules, like the SAP B1 main menu: a folder per module, its screens inside. */
+  function sections() {
+    var s = [
+      { id: 'sales', label: 'ราคาและการขาย', icon: 'price', items: [
+        { id: 'check', label: 'ตรวจราคาตามช่องทาง' },
+        { id: 'custprice', label: 'ราคาตามลูกค้า' },
+        { id: 'bundles', label: 'ชุดเซ็ต' }] },
+      { id: 'rfq', label: 'คำขออนุมัติราคา', icon: 'request', items: [
+        { id: 'new', label: 'ขออนุมัติราคา' },
+        { id: 'mine', label: 'คำขอของฉัน' },
+        { id: 'approved', label: 'ราคาที่อนุมัติแล้ว' }] }
     ];
     if (canApprove()) {
-      r.push({ sep: true });
-      r.push({ id: 'approvals', label: 'รออนุมัติ', badge: S.boot.pendingCount });
-      r.push({ id: 'monitor', label: 'คำขอทั้งหมด' });
-      r.push({ id: 'dashboard', label: 'ภาพรวม' });
+      s.push({ id: 'approve', label: 'ผู้อนุมัติ', icon: 'approve', items: [
+        { id: 'approvals', label: 'รออนุมัติ', badge: S.boot.pendingCount },
+        { id: 'monitor', label: 'คำขอทั้งหมด' },
+        { id: 'dashboard', label: 'ภาพรวม' }] });
     }
-    if (S.boot.user.isAdmin) r.push({ id: 'admin', label: 'ตั้งค่า' });
+    if (S.boot.user.isAdmin) s.push({ id: 'admin', label: 'ผู้ดูแลระบบ', icon: 'admin', items: [{ id: 'admin', label: 'ตั้งค่า' }] });
+    return s;
+  }
+  function routes() {
+    var r = [];
+    sections().forEach(function (sec) { sec.items.forEach(function (it) { r.push({ id: it.id, label: it.label, section: sec.label }); }); });
     return r;
+  }
+  var NAV_KEY = 'rfq-nav-closed';
+  function closedSections() {
+    try { return JSON.parse(localStorage.getItem(NAV_KEY) || '{}') || {}; } catch (e) { return {}; }
   }
 
   function renderNav() {
-    $('#tabs').innerHTML = routes().map(function (r) {
-      if (r.sep) return '<span class="sep"></span>';
-      return '<a href="#' + r.id + '" data-route="' + r.id + '" class="' + (S.route === r.id ? 'active' : '') + '">' + esc(r.label) +
-        (r.badge ? ' <span class="badge">' + r.badge + '</span>' : '') + '</a>';
+    var closed = closedSections();
+    $('#tabs').innerHTML = sections().map(function (sec) {
+      var hasActive = sec.items.some(function (it) { return it.id === S.route; });
+      var open = hasActive || !closed[sec.id];
+      return '<div class="nav-sec' + (open ? ' open' : '') + '"><button type="button" class="nav-head" data-sec="' + sec.id + '" aria-expanded="' + open + '">' +
+        icon(sec.icon) + '<span>' + esc(sec.label) + '</span>' + icon('chev', 'chev') + '</button><div class="nav-items">' +
+        sec.items.map(function (it) {
+          return '<a href="#' + it.id + '" data-route="' + it.id + '" class="' + (S.route === it.id ? 'active' : '') + '"' + (S.route === it.id ? ' aria-current="page"' : '') + '>' +
+            esc(it.label) + (it.badge ? '<span class="badge">' + it.badge + '</span>' : '') + '</a>';
+        }).join('') + '</div></div>';
     }).join('');
-    $$('#tabs a').forEach(function (a) {
-      a.addEventListener('click', function (e) { e.preventDefault(); go(a.getAttribute('data-route')); });
+    $$('#tabs [data-sec]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var sec = b.parentNode, open = !sec.classList.contains('open');
+        sec.classList.toggle('open', open);
+        b.setAttribute('aria-expanded', String(open));
+        var c = closedSections();
+        if (open) delete c[b.getAttribute('data-sec')]; else c[b.getAttribute('data-sec')] = 1;
+        try { localStorage.setItem(NAV_KEY, JSON.stringify(c)); } catch (e) { /* private mode: not remembered */ }
+      });
     });
+    $$('#tabs a').forEach(function (a) {
+      a.addEventListener('click', function (e) { e.preventDefault(); setNavOpen(false); go(a.getAttribute('data-route')); });
+    });
+    var cur = routes().filter(function (r) { return r.id === S.route; })[0];
+    $('#crumb').innerHTML = cur ? esc(cur.section) + ' › <b>' + esc(cur.label) + '</b>' : '';
+  }
+  function setNavOpen(open) {
+    document.body.classList.toggle('nav-open', open);
+    $('#menu-btn').setAttribute('aria-expanded', String(open));
   }
 
   function go(route) {
@@ -201,7 +246,7 @@
     renderNav();
     $('#actionbar').classList.remove('show');
     window.scrollTo(0, 0);
-    ({ check: viewCheck, 'new': viewNew, mine: viewMine, approved: viewApproved, bundles: viewBundles,
+    ({ check: viewCheck, custprice: viewCustPrice, 'new': viewNew, mine: viewMine, approved: viewApproved, bundles: viewBundles,
       approvals: viewApprovals, monitor: viewMonitor, dashboard: viewDashboard, admin: viewAdmin })[route]();
   }
 
@@ -287,7 +332,7 @@
       S.pc = { channelId: c0.id, productKey: '', special: '', discs: defaultDiscs(c0), result: null, busy: false };
     }
     var ch = channel(S.pc.channelId);
-    $('#view').innerHTML = page('ตรวจราคา', 'ใส่ราคาที่จะเสนอลูกค้า ระบบจะบอกทันทีว่าราคานี้อยู่ในเกณฑ์หรือไม่ (ยังไม่บันทึก)') + priceListBanner() +
+    $('#view').innerHTML = page('ตรวจราคาตามช่องทาง', 'ใส่ราคาที่จะเสนอลูกค้า ระบบจะบอกทันทีว่าราคานี้อยู่ในเกณฑ์หรือไม่ (ยังไม่บันทึก)') + priceListBanner() +
       '<div class="grid-2"><div class="card">' + pickerHtml('pc-pick', ch.id) +
       '<div class="field"><label for="pc-prod">' + esc(keyLabel(ch)) + '</label><input type="search" id="pc-prod" list="dl-' + esc(itemSet(ch.id)) + '" autocomplete="off" placeholder="พิมพ์เพื่อค้นหา…" value="' + esc(S.pc.productKey) + '"><div class="hint" id="pc-prod-info"></div></div>' +
       '<div class="fields prices" style="--n:' + (ch.discounts.length + 1) + '">' +
@@ -391,6 +436,101 @@
       start: keep.start || S.boot.today, end: keep.end || addDaysIso(S.boot.today, S.boot.settings.defaultValidityDays),
       lines: keepLines ? S.cart.lines.map(function (l) { l.discs = defaultDiscs(channel(channelId)); l.result = null; return l; }) : []
     };
+  }
+
+  // ================= ราคาตามลูกค้า (customer price lookup) =================
+  var TIER_SET = { GT: 'P-EVE~GT', DGT: 'P-EVE~DGT', BT: 'P-EVE~BT', NTW: 'P-EVE', FOSTER: 'P-FOSTER' };
+  var METHOD_TEXT = { PCT_RUNNING: '% ของราคาก่อนหน้า', PCT_GROSS: '% ของราคาตั้ง', THB_UNIT: 'บาท/ชิ้น', THB_ORDER: 'บาท/ออเดอร์' };
+  function cpGroup(code) { return (S.boot.customerGroups || []).filter(function (g) { return g.code === code; })[0] || null; }
+
+  function viewCustPrice() {
+    var c = S.cp = S.cp || { customer: '', group: '', product: '', qty: '1', gross: '', found: {}, result: null };
+    var groups = S.boot.customerGroups || [];
+    $('#view').innerHTML = page('ราคาตามลูกค้า', 'เลือกลูกค้าและสินค้า ระบบแสดงราคาตั้ง ส่วนลดและค่าธรรมเนียมทุกขั้นตามเงื่อนไขของลูกค้า จนถึงราคาสุทธิ') +
+      (groups.length ? '' : '<div class="banner">ยังไม่มีข้อมูลกลุ่มลูกค้าและเงื่อนไขราคา — ผู้ดูแลระบบต้องซิงค์ไฟล์ Customer Price Mapping ก่อน</div>') +
+      '<div class="grid-2"><div class="card"><div class="fields">' +
+      '<div class="field wide"><label for="cp-cust">ลูกค้า (รหัสหรือชื่อ)</label><input type="search" id="cp-cust" list="dl-cp-cust" autocomplete="off" placeholder="พิมพ์รหัส SAP หรือชื่อลูกค้า…" value="' + esc(c.customer) + '"><div class="hint" id="cp-cust-info"></div></div>' +
+      '<div class="field wide"><label for="cp-group">หรือกลุ่มลูกค้า (เมื่อไม่ระบุลูกค้า)</label><select id="cp-group"><option value="">– เลือกกลุ่ม –</option>' +
+        groups.map(function (g) { return '<option value="' + esc(g.code) + '"' + (g.code === c.group ? ' selected' : '') + '>' + esc(g.code + ' · ' + g.name) + (g.tier ? ' (' + esc(g.tier) + ')' : '') + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field wide"><label for="cp-prod">สินค้า (รุ่นหรือบาร์โค้ด)</label><input type="search" id="cp-prod" autocomplete="off" placeholder="พิมพ์เพื่อค้นหา…" value="' + esc(c.product) + '"><div class="hint" id="cp-prod-info"></div></div>' +
+      '<div class="field"><label for="cp-qty">จำนวน (ชิ้น)</label><input type="text" inputmode="numeric" class="num" id="cp-qty" value="' + esc(c.qty) + '"></div>' +
+      '<div class="field"><label for="cp-gross">ราคาตั้ง (กรอกเมื่อไม่มีในรายการราคา)</label><input type="text" inputmode="decimal" class="num" id="cp-gross" value="' + esc(c.gross) + '" placeholder="ไม่บังคับ"></div>' +
+      '</div><datalist id="dl-cp-cust"></datalist></div><div class="card" id="cp-result"></div></div>';
+
+    var custInfo = function () {
+      var f = c.found[c.customer];
+      $('#cp-cust-info').innerHTML = f ? esc(f.name) + ' · ' + esc(f.channel || '-') + ' · กลุ่ม <b>' + esc(f.group || 'ยังไม่กำหนด') + '</b>' : '';
+    };
+    var currentGroup = function () { var f = c.found[c.customer]; return c.customer ? (f ? f.group : '') : c.group; };
+    var prodList = function () {
+      var g = cpGroup(currentGroup());
+      var set = (g && TIER_SET[g.tier]) || 'P-EVE';
+      $('#cp-prod').setAttribute('list', 'dl-' + set);
+      var it = S.items[set] && c.product ? S.items[set][c.product.trim().toUpperCase()] : null;
+      $('#cp-prod-info').innerHTML = it ? (it.n !== it.k ? esc(it.n) + ' · ' : '') + (it.p ? 'ราคาฐาน ' + money(it.p) + ' ฿' : '') + itemTags(it) : '';
+    };
+    var search = debounce(function () {
+      var q = c.customer;
+      if (q.length < 2) return;
+      run('searchCustomers', q).then(function (list) {
+        if (c.customer !== q) return;
+        list.forEach(function (x) { c.found[x.code] = x; });
+        $('#dl-cp-cust').innerHTML = list.map(function (x) {
+          return '<option value="' + esc(x.code) + '">' + esc(x.name + ' · ' + (x.group || 'ยังไม่กำหนดกลุ่ม')) + '</option>';
+        }).join('');
+        custInfo(); prodList(); calc();
+      }).catch(fail);
+    }, 250);
+    var calc = debounce(function () {
+      if (!(c.customer || c.group) || !c.product.trim()) { c.result = null; renderCpResult(); return; }
+      var payload = { customerCode: c.customer, groupCode: c.customer ? '' : c.group, productKey: c.product.trim(), qty: num(c.qty) || 1, grossPrice: c.gross };
+      var stamp = JSON.stringify(payload);
+      c.stamp = stamp; c.busy = true; renderCpResult();
+      run('customerPriceCheck', payload).then(function (r) { if (c.stamp === stamp) { c.busy = false; c.result = r; renderCpResult(); } })
+        .catch(function (e) { if (c.stamp === stamp) { c.busy = false; c.result = { error: e.message }; renderCpResult(); } });
+    }, 400);
+
+    $('#cp-cust').addEventListener('input', function (e) { c.customer = e.target.value.trim(); custInfo(); prodList(); search(); calc(); });
+    $('#cp-group').addEventListener('change', function (e) { c.group = e.target.value; prodList(); calc(); });
+    $('#cp-prod').addEventListener('input', function (e) { c.product = e.target.value; prodList(); calc(); });
+    $('#cp-qty').addEventListener('input', function (e) { c.qty = e.target.value; calc(); });
+    $('#cp-gross').addEventListener('input', function (e) { c.gross = e.target.value; calc(); });
+    custInfo(); prodList(); renderCpResult();
+    if (c.customer && !c.found[c.customer]) search();
+  }
+
+  function renderCpResult() {
+    var box = $('#cp-result'), c = S.cp;
+    if (!box) return;
+    if (c.busy) { box.innerHTML = '<div class="loading"><span class="spin"></span></div>'; return; }
+    var r = c.result;
+    if (!r) { box.innerHTML = '<div class="empty-state"><h2>ผลการตรวจราคา</h2><p class="muted">เลือกลูกค้า (หรือกลุ่ม) และสินค้า ระบบจะคำนวณราคาสุทธิให้ทันที</p></div>'; return; }
+    if (r.error) { box.innerHTML = '<div class="notice" style="border-color:var(--danger)">' + esc(r.error) + '</div>'; return; }
+    var g = r.group;
+    box.innerHTML =
+      '<div class="cp-head">' +
+        (r.customer ? '<div><span class="label">ลูกค้า</span><div><b>' + esc(r.customer.code) + '</b> ' + esc(r.customer.name) + '</div><div class="muted">' + esc(r.customer.channel || '-') + ' · กลุ่มจาก' + esc(r.customer.groupFrom) + '</div></div>' : '') +
+        '<div><span class="label">กลุ่มลูกค้า</span><div><b>' + esc(g.code) + '</b> ' + esc(g.name) + ' <span class="group-chip">ราคาฐาน ' + esc(g.tier || '–') + '</span></div>' +
+          (g.creditDays !== null && g.creditDays !== undefined ? '<div class="muted">เครดิต ' + esc(g.creditDays) + ' วัน</div>' : '') + '</div>' +
+        '<div><span class="label">สินค้า</span><div><b>' + esc(r.productKey) + '</b>' + (r.product && r.product.name !== r.product.key ? ' ' + esc(r.product.name) : '') + '</div>' +
+          (r.product ? '<div class="muted">' + (r.product.barcode ? 'บาร์โค้ด ' + esc(r.product.barcode) + ' · ' : '') + 'รอบราคา ' + esc(r.product.priceList) + '</div>' : '') + '</div>' +
+      '</div>' +
+      (r.flags.length ? '<div>' + r.flags.map(function (f) { return '<span class="flag warn">' + esc(f) + '</span>'; }).join('') + '</div>' : '') +
+      '<div class="cp-net"><div><span class="label">ราคาสุทธิ (รวม VAT) ต่อชิ้น</span><div class="v">' + money(r.net, 2) + ' ฿</div></div>' +
+        '<div><span class="label">ไม่รวม VAT</span><div class="v2">' + money(r.netExVat, 2) + ' ฿</div></div>' +
+        '<div><span class="label">ส่วนลดรวมจากราคาตั้ง</span><div class="v2">' + pct(r.totalDiscount, 2) + '</div></div>' +
+        '<div><span class="label">มูลค่ารวม ' + esc(r.qty) + ' ชิ้น</span><div class="v2">' + money(r.total, 2) + ' ฿</div></div></div>' +
+      '<div class="table-wrap"><table class="cards cp-steps"><thead><tr><th class="num">ลำดับ</th><th>เงื่อนไข</th><th class="num">ค่า</th><th class="num">หัก (บาท/ชิ้น)</th><th class="num">ราคาหลังหัก</th></tr></thead><tbody>' +
+        '<tr class="gross"><td data-label="ลำดับ" class="num">–</td><td data-label="เงื่อนไข">ราคาตั้ง' + (r.grossSource === 'typed' ? ' (กรอกเอง)' : ' (' + esc(g.tier) + ')') + '</td><td data-label="ค่า" class="num"></td><td data-label="หัก" class="num"></td><td data-label="ราคา" class="num"><b>' + money(r.gross, 2) + '</b></td></tr>' +
+        (r.steps.length ? r.steps.map(function (s) {
+          var val = s.method.indexOf('PCT') === 0 ? pct(Number(s.pct), 2) : money(s.thb, 2) + ' ฿';
+          return '<tr><td data-label="ลำดับ" class="num">' + esc(s.seq) + '</td><td data-label="เงื่อนไข">' + esc(s.name || s.code) + ' <span class="muted">' + esc(s.code) + '</span>' +
+            (s.forCustomer ? '<span class="tag new">เฉพาะลูกค้า</span>' : '') + (s.scope && s.scope.toUpperCase() !== 'ALL' ? '<span class="tag up">เฉพาะรุ่นนี้</span>' : '') +
+            '<div class="muted">' + esc(METHOD_TEXT[s.method] || s.method) + '</div></td>' +
+            '<td data-label="ค่า" class="num">' + val + '</td><td data-label="หัก" class="num">' + money(s.deduction, 2) + '</td><td data-label="ราคา" class="num">' + money(s.after, 2) + '</td></tr>';
+        }).join('') : '<tr><td colspan="5" class="muted">กลุ่มนี้ยังไม่มีเงื่อนไขส่วนลด — ราคาสุทธิเท่ากับราคาตั้ง</td></tr>') +
+      '</tbody></table></div>' +
+      '<p class="hint" style="margin-top:8px">ราคาสำหรับใช้อ้างอิงเท่านั้น ราคาพิเศษนอกเงื่อนไขต้องขออนุมัติที่เมนู ขออนุมัติราคา</p>';
   }
 
   function viewNew() {
@@ -1083,8 +1223,21 @@
     return '<div class="card stack-gap"><div class="row" style="justify-content:space-between"><h2 style="margin:0">ซิงค์ราคา SMG จาก Google Sheets</h2><div class="row">' +
       '<button class="btn small ghost" id="sync-refresh">รีเฟรช</button>' +
       (configured ? '<button class="btn small primary" id="sync-go">ซิงค์ราคาตอนนี้</button>' : '') + '</div></div>' +
-      '<p class="hint">ต้นทุน: COST UPDATE 2021 (คอลัมน์ P, ไม่รวม ST = N) · ราคาฐาน: SMG PRICELIST NATIONWIDE · Hot price: SMG MASTER (GT / DGT ออนไลน์ / BT) — n8n ซิงค์ทุกวัน' +
+      '<p class="hint">ต้นทุน: COST UPDATE 2021 (คอลัมน์ P, ไม่รวม ST = N) · ราคาฐาน: SMG PRICELIST NATIONWIDE · Hot price: SMG MASTER (GT / DGT ออนไลน์ / BT) · ราคาตามลูกค้า: Customer Price Mapping — n8n ซิงค์ทุกวัน' +
       (configured ? '' : ' · ยังไม่ได้ตั้งค่า SYNC_WEBHOOK_URL ที่เซิร์ฟเวอร์') + '</p>' + body + '</div>';
+  }
+
+  /** Customer Price Mapping sheet (ราคาตามลูกค้า): last import and what is loaded. Synced with the same button. */
+  function mappingCard(x) {
+    if (!x) return '';
+    var last = !x.at ? '<p class="muted">ยังไม่เคยนำเข้า</p>'
+      : (x.ok ? '<p class="hint">นำเข้าล่าสุด ' + esc(dateTh(x.at)) + ' ' + esc(timeTh(x.at)) + '</p>'
+        : '<div class="notice" style="border-color:var(--danger)"><b>นำเข้าไม่สำเร็จ</b> ' + esc(dateTh(x.at)) + ' ' + esc(timeTh(x.at)) + '<br>' + esc(x.error) + '</div>');
+    return '<div class="card stack-gap"><h2>ข้อมูลราคาตามลูกค้า (Customer Price Mapping)</h2>' + last +
+      '<dl class="kv"><dt>ลูกค้า</dt><dd>' + x.customers + (x.ungrouped ? ' · ยังไม่มีกลุ่ม ' + x.ungrouped : '') + '</dd>' +
+      '<dt>กลุ่มลูกค้า / เงื่อนไข</dt><dd>' + x.groups + ' กลุ่ม · ' + x.groupTerms + ' บรรทัด · คลังเงื่อนไข ' + x.terms + '</dd></dl>' +
+      (x.errorCount ? '<div class="banner" style="margin:8px 0 0">ข้ามแถวที่ใช้ไม่ได้ ' + x.errorCount + ' แถว:<br>' + x.errors.slice(0, 10).map(esc).join('<br>') + (x.errorCount > 10 ? '<br>…' : '') + '</div>' : '') +
+      '</div>';
   }
 
   function renderAdmin(a) {
@@ -1094,7 +1247,7 @@
     var rulesText = function (rules) {
       return (rules || []).map(function (r) { return '<code>' + esc(r.indicator) + ' ' + (r.below !== undefined ? '&lt; ' + pct(r.below, 0) : '≤ ' + pct(r.upTo, 0)) + '</code>'; }).join(' ') + ' <code>OKAY</code>';
     };
-    $('#adm').innerHTML = syncCard(a.catalogSync, a.syncConfigured) +
+    $('#adm').innerHTML = syncCard(a.catalogSync, a.syncConfigured) + mappingCard(a.customerPricing) +
       '<div class="grid-2"><div class="card"><h2>นำเข้าข้อมูล (CSV)</h2>' +
       '<p class="hint">Google Sheets → File → Download → Comma-separated values (.csv) ของแท็บที่ต้องการ · n8n สามารถส่งข้อมูลเดียวกันอัตโนมัติผ่าน /api/integrations/import</p>' +
       '<div class="fields"><div class="field wide"><label>ประเภท</label><select id="imp-type">' + IMPORT_TYPES.map(function (t) { return '<option value="' + t[0] + '">' + esc(t[1]) + '</option>'; }).join('') + '</select></div>' +
@@ -1229,6 +1382,10 @@
         .then(function (info) { toast('บันทึกผู้ใช้แล้ว'); renderAdmin(info); }).catch(fail);
     });
   }
+
+  $('#menu-btn').addEventListener('click', function () { setNavOpen(!document.body.classList.contains('nav-open')); });
+  $('#scrim').addEventListener('click', function () { setNavOpen(false); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setNavOpen(false); });
 
   boot();
 })();
