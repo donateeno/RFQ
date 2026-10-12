@@ -9,6 +9,7 @@ supervisors approve and monitor margin (%MU). Thai UI, Thai business terms.
   - `src/pricing.js` — pure pricing maths. `src/rfq/service.js` — business logic; every function in `rpc` is browser-callable.
   - `src/rfq/importers.js` — CSV / n8n imports (cost masters, legacy sheet tabs). `src/rfq/notifications.js` — email payloads for n8n.
   - Price lists: products belong to a `price_lists` period; each brand uses its newest effective list. Pending requests are re-priced on approval; approved prices keep their snapshot until their end date. Price-list names are case-insensitive (`name_norm`); a new list always needs an explicit date.
+  - SMG catalogue (`smg_catalog` import, n8n `rfq-smg-sync.json`): products keyed by barcode with `price_gt/price_dgt/price_bt` (`tiered`); channels pick a tier via `priceTier`; the rule is `pricing.resolveTierPrice` (mirrors SMG MASTER H/I/R).
   - Bundles (`bundles`, `bundle_items`): user-built sets priced live from the current list.
   - `migrations/*.sql` — append-only. `public/` — static browser app (no build step, ES5-style, no framework).
   - `test/` — `node:test` against a real PostgreSQL (`TEST_DATABASE_URL`).

@@ -2,6 +2,9 @@
 /** Read access to settings, price groups/channels, price lists, bundles and the cost masters. */
 const { landedCost, UserError } = require('../pricing');
 
+const PRODUCT_COLS = `key, name, cost, normal_price, barcode, make, category, status, sale_channel, price_cat, list_price,
+  price_gt, price_dgt, price_bt, tiered`;
+
 async function getSettings(db) {
   const { rows } = await db.query('select key, value from settings');
   const s = {};
@@ -19,7 +22,7 @@ async function getCatalog(db, includeInactive) {
     indicatorRules: g.indicator_rules, params: g.params, active: g.active,
     channels: channels.filter((c) => c.group_id === g.id).map((c) => ({
       id: c.id, groupId: c.group_id, name: c.name, brand: c.brand, idPrefix: c.id_prefix, formula: c.formula,
-      discounts: c.discounts, keyLabel: c.key_label, description: c.description, active: c.active
+      discounts: c.discounts, keyLabel: c.key_label, description: c.description, priceTier: c.price_tier || null, active: c.active
     }))
   }));
 }
@@ -59,13 +62,26 @@ function landedFromRow(r, params) {
   return landedCost({ factoryRmb: r.factory_rmb, exchRate: r.exch_rate, bpDisc: r.bp_disc, incoterm: r.incoterm, miscCharge: r.misc_charge }, params);
 }
 
+/** Product of a price list by key (model) or barcode. */
 async function productIn(db, listId, brand, key) {
-  return (await db.query('select key, name, cost, normal_price from products where price_list_id = $1 and brand = $2 and key_norm = upper(btrim($3))',
-    [listId, brand, key])).rows[0] || null;
+  return (await db.query(
+    `select ${PRODUCT_COLS} from products where price_list_id = $1 and brand = $2 and (key_norm = upper(btrim($3)) or barcode = btrim($3))
+     order by (key_norm = upper(btrim($3))) desc limit 1`, [listId, brand, key])).rows[0] || null;
+}
+
+/**
+ * Selling price of a product row in a channel: SMG-synced (tiered) products use the channel's tier price
+ * (null = not sold in that channel this period); other products use normal_price.
+ */
+function channelPrice(p, channel) {
+  if (!p) return null;
+  if (!p.tiered) return p.normal_price;
+  const tier = channel && channel.priceTier;
+  return tier ? p['price_' + tier.toLowerCase()] : p.normal_price;
 }
 
 /** Bundle priced from one price list: cost/normal are sums × qty, null when any component is missing. */
-async function priceBundle(db, bundleId, listId, brand) {
+async function priceBundle(db, bundleId, listId, brand, channel) {
   const items = (await db.query('select product_key, qty from bundle_items where bundle_id = $1 order by position', [bundleId])).rows;
   let cost = 0;
   let normal = 0;
@@ -73,8 +89,9 @@ async function priceBundle(db, bundleId, listId, brand) {
   for (const it of items) {
     const p = listId ? await productIn(db, listId, brand, it.product_key) : null;
     if (!p) { missing.push(it.product_key); continue; }
+    const price = channelPrice(p, channel);
     cost = cost === null || !(p.cost > 0) ? null : cost + p.cost * it.qty;
-    normal = normal === null || p.normal_price === null ? null : normal + p.normal_price * it.qty;
+    normal = normal === null || price === null ? null : normal + price * it.qty;
   }
   if (missing.length) return { cost: null, normalPrice: null, missing, items };
   return { cost, normalPrice: normal, missing, items };
@@ -93,18 +110,21 @@ async function lookupItem(db, group, channel, key, date) {
     if (cur) {
       const p = await productIn(db, cur.id, channel.brand, key);
       if (p) {
-        const out = { key: p.key, name: p.name || p.key, cost: p.cost, normalPrice: p.normal_price, priceList: cur };
+        const out = { key: p.key, name: p.name || p.key, cost: p.cost, normalPrice: channelPrice(p, channel), priceList: cur };
+        if (p.tiered) {
+          Object.assign(out, { tiered: true, barcode: p.barcode, make: p.make, status: p.status, saleChannel: p.sale_channel, priceCat: p.price_cat, listPrice: p.list_price });
+        }
         if (pc.previous && !(await productIn(db, pc.previous.id, channel.brand, key))) out.isNew = true;
         if (pc.upcoming) {
           const u = await productIn(db, pc.upcoming.id, channel.brand, key);
-          out.upcoming = { name: pc.upcoming.name, effectiveFrom: pc.upcoming.effectiveFrom, normalPrice: u ? u.normal_price : null, discontinued: !u };
+          out.upcoming = { name: pc.upcoming.name, effectiveFrom: pc.upcoming.effectiveFrom, normalPrice: u ? channelPrice(u, channel) : null, discontinued: !u };
         }
         return out;
       }
     }
     const b = (await db.query('select * from bundles where active and brand = $1 and name_norm = upper(btrim($2))', [channel.brand, key])).rows[0];
     if (!b) return null;
-    const priced = await priceBundle(db, b.id, cur && cur.id, channel.brand);
+    const priced = await priceBundle(db, b.id, cur && cur.id, channel.brand, channel);
     return {
       key: b.name, name: b.label ? `${b.label} (${b.name})` : b.name, cost: priced.cost, normalPrice: priced.normalPrice,
       priceList: cur, bundleId: b.id, missing: priced.missing
@@ -120,4 +140,4 @@ async function lookupItem(db, group, channel, key, date) {
   return { key: r.item_code, name: r.description || r.item_code, cost: lc.cost, normalPrice: lc.suggestedPrice };
 }
 
-module.exports = { getSettings, getCatalog, getChannel, lookupItem, landedFromRow, priceContext, productIn, priceBundle };
+module.exports = { getSettings, getCatalog, getChannel, lookupItem, landedFromRow, priceContext, productIn, priceBundle, channelPrice, PRODUCT_COLS };

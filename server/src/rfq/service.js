@@ -7,7 +7,7 @@
  *              SUPERVISOR  + net prices and the MU band (e.g. "20–25%"), never cost/gain/exact %MU
  *              cost viewer + cost, gain, exact %MU   (users.can_view_cost, set from COST_VIEWERS env only)
  */
-const { calculate, resolveDiscounts, round, muBand, INDICATOR, UserError } = require('../pricing');
+const { calculate, resolveDiscounts, round, muBand, INDICATOR, PRICE_TIERS, UserError } = require('../pricing');
 const { tx } = require('../db');
 const { getSettings, getCatalog, getChannel, lookupItem, landedFromRow, priceContext } = require('./catalog');
 const { importData, parseCsv } = require('./importers');
@@ -16,6 +16,13 @@ const notifyMsg = require('./notifications');
 const STATUS = { PENDING: 'Pending', APPROVED: 'Approved', REJECTED: 'Rejected', CANCELLED: 'Cancelled', CLOSED: 'Closed' };
 const DISPLAY_STATUSES = ['Pending', 'Approved', 'Expired', 'Rejected', 'Cancelled', 'Closed'];
 const ROLES = ['SALES', 'SUPERVISOR', 'ADMIN'];
+/** Nationwide pricelist status (sheet 'Library') shown as a warning on checks and requests. */
+const STATUS_FLAGS = {
+  OR: 'สินค้ายกเลิก (OR) — ขายตามสต็อกคงเหลือ',
+  EX: 'สินค้า Exclusive (EX) — เฉพาะลูกค้าที่ได้รับอนุญาต',
+  G: 'ของแถม / ของพรีเมียม (G)',
+  MTO: 'สินค้าสั่งผลิต (MTO) — ยืนยันราคาและระยะเวลากับฝ่ายผลิตภัณฑ์/จัดซื้อ'
+};
 
 // ---------------------------------------------------------------- helpers
 
@@ -68,6 +75,10 @@ async function prepareLine(db, group, channel, line, settings, date) {
   else if (item.missing && item.missing.length) flags.push('สินค้าในเซ็ตไม่อยู่ในรอบราคาปัจจุบัน: ' + item.missing.join(', '));
   else if (!(item.cost > 0)) flags.push('ไม่มีต้นทุน');
   if (normal > 0 && special > normal) flags.push('ราคาพิเศษสูงกว่าราคาปกติ');
+  if (item && item.tiered) {
+    if (normal === null) flags.push(`ไม่มีราคาขายช่องทาง ${channel.priceTier || ''} ในรอบราคานี้${item.saleChannel ? ' (' + item.saleChannel + ')' : ''}`);
+    if (STATUS_FLAGS[item.status]) flags.push(STATUS_FLAGS[item.status]);
+  }
   return {
     found: !!item, item,
     productKey: item ? item.key : str(line.productKey, 200),
@@ -177,16 +188,25 @@ async function getBootstrap(ctx) {
     priceLists[brand] = { current, upcoming };
     if (!current) continue;
     const prevKeys = previous ? new Set((await db.query('select key_norm from products where price_list_id = $1 and brand = $2', [previous.id, brand])).rows.map((r) => r.key_norm)) : null;
-    const up = upcoming ? new Map((await db.query('select key_norm, normal_price from products where price_list_id = $1 and brand = $2', [upcoming.id, brand])).rows.map((r) => [r.key_norm, r.normal_price])) : null;
-    const rows = (await db.query('select key, key_norm, name, normal_price from products where price_list_id = $1 and brand = $2 order by key', [current.id, brand])).rows;
+    const cols = 'key, key_norm, name, normal_price, barcode, make, status, sale_channel, price_cat, list_price, price_gt, price_dgt, price_bt, tiered';
+    const up = upcoming ? new Map((await db.query(`select ${cols} from products where price_list_id = $1 and brand = $2`, [upcoming.id, brand])).rows.map((r) => [r.key_norm, r])) : null;
+    const rows = (await db.query(`select ${cols} from products where price_list_id = $1 and brand = $2 order by key`, [current.id, brand])).rows;
     rows.forEach((r) => {
-      const e = { b: brand, k: r.key, n: r.name, p: r.normal_price };
+      const e = productView(brand, r);
       if (prevKeys && !prevKeys.has(r.key_norm)) e.nw = 1;
       if (up) {
-        if (!up.has(r.key_norm)) e.ux = 1;
-        else if (up.get(r.key_norm) !== r.normal_price) e.up = up.get(r.key_norm);
+        const u = up.get(r.key_norm);
+        if (!u) e.ux = 1;
+        else {
+          if (u.normal_price !== r.normal_price) e.up = u.normal_price;
+          if (r.tiered && u.tiered) {
+            const ut = {};
+            PRICE_TIERS.forEach((t) => { const k = 'price_' + t.toLowerCase(); if (u[k] !== r[k] && u[k] !== null) ut[t] = u[k]; });
+            if (Object.keys(ut).length) e.ut = ut;
+          }
+        }
       }
-      priceByKey[brand + '|' + r.key_norm] = r.normal_price;
+      priceByKey[brand + '|' + r.key_norm] = { p: r.normal_price, t: e.t || null };
       products.push(e);
     });
   }
@@ -215,15 +235,51 @@ async function getBootstrap(ctx) {
   return out;
 }
 
+/** Product for the browser (never cost): t = price per channel tier for SMG-synced products. */
+function productView(brand, r) {
+  const e = { b: brand, k: r.key, n: r.name, p: r.normal_price };
+  if (r.tiered) {
+    e.t = {};
+    PRICE_TIERS.forEach((t) => { e.t[t] = r['price_' + t.toLowerCase()]; });
+    if (r.barcode) e.bc = r.barcode;
+    if (r.make && r.make !== brand) e.mk = r.make;
+    if (r.status) e.st = r.status;
+    if (r.sale_channel) e.sc = r.sale_channel;
+    if (r.price_cat) e.pc = r.price_cat;
+    if (r.list_price) e.lp = r.list_price;
+  }
+  return e;
+}
+
 /** Bundle for the browser: components and summed normal price from the current list (never cost). */
 function bundleView(b, priceByKey) {
   let p = 0;
-  for (const it of b.items) {
-    const price = priceByKey[b.brand + '|' + String(it.k).trim().toUpperCase()];
-    if (price === undefined || price === null) { p = null; break; }
-    p += price * it.q;
+  let t = null;
+  const comps = b.items.map((it) => ({ q: it.q, price: priceByKey[b.brand + '|' + String(it.k).trim().toUpperCase()] }));
+  if (comps.some((c) => !c.price)) p = null;
+  else {
+    for (const c of comps) p = p === null || c.price.p === null ? null : p + c.price.p * c.q;
+    if (comps.some((c) => c.price.t)) {
+      t = {};
+      PRICE_TIERS.forEach((tier) => {
+        let sum = 0;
+        for (const c of comps) {
+          const v = c.price.t ? c.price.t[tier] : c.price.p;
+          sum = sum === null || v === null || v === undefined ? null : sum + v * c.q;
+        }
+        t[tier] = sum;
+      });
+    }
   }
-  return { id: b.id, b: b.brand, k: b.name, n: b.label || 'ชุดเซ็ต', p, items: b.items, by: b.created_by };
+  const out = { id: b.id, b: b.brand, k: b.name, n: b.label || 'ชุดเซ็ต', p, items: b.items, by: b.created_by };
+  if (t) out.t = t;
+  return out;
+}
+
+/** {brand|key_norm → {p, t}} for bundleView, from one price list. */
+async function priceMap(db, listId, brand) {
+  const rows = (await db.query('select key_norm, normal_price, price_gt, price_dgt, price_bt, tiered from products where price_list_id = $1 and brand = $2', [listId, brand])).rows;
+  return Object.fromEntries(rows.map((r) => [brand + '|' + r.key_norm, { p: r.normal_price, t: r.tiered ? { GT: r.price_gt, DGT: r.price_dgt, BT: r.price_bt } : null }]));
 }
 
 // ---------------------------------------------------------------- price check & submit
@@ -556,10 +612,49 @@ async function getAdminInfo(ctx) {
       requests: Number((await q('select count(*) from requests'))[0].count)
     },
     priceCheckAlerts: await priceCheckAlerts(db, await getSettings(db)),
+    catalogSync: await catalogSyncStatus(db),
+    syncConfigured: !!ctx.cfg.syncWebhookUrl,
     recentLog: (await q('select at, user_email, action, req_ids, detail from audit_log order by at desc limit 30')).map((l) => ({
       at: l.at.toISOString(), user: l.user_email, action: l.action, ids: l.req_ids.slice(0, 5).join(', ') + (l.req_ids.length > 5 ? ' …' : ''), detail: JSON.stringify(l.detail)
     }))
   };
+}
+
+/** Last SMG catalogue sync from n8n, successful or not (counts and barcodes only, never cost). */
+async function catalogSyncStatus(db) {
+  const r = (await db.query(`select at, action, detail from audit_log where user_email = 'n8n' and action in ('IMPORT', 'IMPORT_FAILED')
+    and detail->>'type' = 'smg_catalog' order by at desc limit 1`)).rows[0];
+  if (!r) return null;
+  const d = r.detail || {};
+  return {
+    at: r.at.toISOString(), ok: r.action === 'IMPORT', error: d.error || '', priceList: d.priceList || '', imported: d.imported || 0,
+    withCost: d.withCost || 0, withoutCost: d.withoutCost || 0, notForSale: d.notForSale || 0, blankSaleStatus: d.blankSaleStatus || 0,
+    statuses: d.statuses || {}, masterMismatchCount: d.masterMismatchCount || 0, masterMismatches: d.masterMismatches || [],
+    duplicateBarcodes: d.duplicateBarcodes || [], badBarcodes: d.badBarcodes || 0
+  };
+}
+
+/** Admin "sync now": asks n8n to read the three Google Sheets and post them to /api/integrations/import/smg_catalog. */
+async function requestCatalogSync(ctx) {
+  const user = admin(ctx);
+  if (!ctx.cfg.syncWebhookUrl) throw new UserError('ยังไม่ได้ตั้งค่า SYNC_WEBHOOK_URL ที่เซิร์ฟเวอร์');
+  if ((await ctx.db.query(`select 1 from audit_log where action = 'SYNC_REQUEST' and at > now() - interval '2 minutes'`)).rowCount) {
+    throw new UserError('เพิ่งสั่งซิงค์ไปแล้ว กรุณารอ 2 นาที', 429);
+  }
+  await log(ctx.db, user.email, 'SYNC_REQUEST', [], {});
+  let r;
+  try {
+    r = await fetch(ctx.cfg.syncWebhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(ctx.cfg.integrationToken ? { Authorization: 'Bearer ' + ctx.cfg.integrationToken } : {}) },
+      body: JSON.stringify({ event: 'catalog.sync', requestedBy: user.email }),
+      signal: AbortSignal.timeout(10000)
+    });
+  } catch (e) {
+    throw new UserError('ติดต่อ n8n ไม่ได้: ' + e.message, 502);
+  }
+  if (!r.ok) throw new UserError('n8n ตอบกลับ HTTP ' + r.status, 502);
+  return { ok: true };
 }
 
 /** Users who checked one item at many different prices in the last 7 days (see guardPriceCheck). */
@@ -705,7 +800,8 @@ async function createBundle(ctx, payload) {
   for (const [i, it] of items.entries()) {
     const qty = it.qty === undefined || it.qty === '' ? 1 : num(it.qty);
     if (!Number.isInteger(qty) || qty < 1 || qty > 99) throw new UserError(`รายการที่ ${i + 1}: จำนวนต้องเป็น 1–99`);
-    const p = (await db.query('select key from products where price_list_id = $1 and brand = $2 and key_norm = upper(btrim($3))', [pc.current.id, brand, str(it.productKey, 200)])).rows[0];
+    const p = (await db.query('select key from products where price_list_id = $1 and brand = $2 and (key_norm = upper(btrim($3)) or barcode = btrim($3)) order by (key_norm = upper(btrim($3))) desc limit 1',
+      [pc.current.id, brand, str(it.productKey, 200)])).rows[0];
     if (!p) throw new UserError(`ไม่พบสินค้า "${str(it.productKey, 80)}" ในรอบราคาปัจจุบัน`);
     resolved.push({ key: p.key, qty });
   }
@@ -724,9 +820,7 @@ async function createBundle(ctx, payload) {
   });
   const row = (await db.query(`select b.id, b.brand, b.name, b.label, b.created_by, json_agg(json_build_object('k', i.product_key, 'q', i.qty) order by i.position) as items
      from bundles b join bundle_items i on i.bundle_id = b.id where b.id = $1 group by b.id`, [id])).rows[0];
-  const prices = Object.fromEntries((await db.query('select key_norm, normal_price from products where price_list_id = $1 and brand = $2', [pc.current.id, brand])).rows
-    .map((r) => [brand + '|' + r.key_norm, r.normal_price]));
-  return bundleView(row, prices);
+  return bundleView(row, await priceMap(db, pc.current.id, brand));
 }
 
 /** Creator or admin. Requests that used the bundle keep their snapshot. */
@@ -745,7 +839,7 @@ module.exports = {
   rpc: {
     getBootstrap, priceCheck, submitRequest, listMyRequests, listRequests, searchApprovedPrices, getLineContext,
     decideRequests, cancelMyRequests, getDashboard, getAdminInfo, saveSettings, saveUser, importCsv,
-    createPriceList, savePriceList, deletePriceList, createBundle, deleteBundle
+    createPriceList, savePriceList, deletePriceList, createBundle, deleteBundle, requestCatalogSync
   },
   // internal
   todayIso, STATUS

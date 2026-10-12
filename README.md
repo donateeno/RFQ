@@ -13,6 +13,8 @@ Sales staff check a special price and request approval. Supervisors approve requ
 
 **Cost:** one cost per product, used by every price group (GT, BT and OFFI never disagree). Bundles add up the same component costs. **Price checks** by anyone who can't see cost are logged. Checking one item at many prices (a way to guess cost from the indicator) alerts the admins by email, and is refused after a limit (ตั้งค่า: `PRICE_CHECK_ALERT`, `PRICE_CHECK_LIMIT`, `PRICE_CHECK_PER_HOUR`).
 
+**SMG catalogue (EVE / Evercook / Excel):** n8n syncs barcode, model, cost and prices daily from the cost file, the Nationwide pricelist and the SMG MASTER of the current period. Each channel sells at its own price tier: GT, DGT (online) or BT hot price, otherwise the Nationwide promotion price. Discontinued (OR), exclusive (EX), gift (G) and made-to-order (MTO) items carry a warning. Sales can search by model or barcode.
+
 **Bundles:** anyone can combine 2–5 items into a set (like the old DUMMY SET tab). Everyone can use it. Its list price and cost are the sums of its components in the current price list.
 
 ## Price groups → channels

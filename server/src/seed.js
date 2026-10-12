@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { FORMULAS, COST_SOURCES } = require('./pricing');
+const { FORMULAS, COST_SOURCES, PRICE_TIERS } = require('./pricing');
 const { tx } = require('./db');
 
 const DEFAULT_SETTINGS = [
@@ -49,6 +49,7 @@ function validatePriceGroups(raw) {
       if (!FORMULAS.includes(c.formula)) errors.push(`${c.id}: formula must be one of ${FORMULAS}`);
       if (!c.idPrefix) errors.push(`${c.id}: idPrefix is required`);
       if (g.costSource === 'PRODUCT' && !c.brand) errors.push(`${c.id}: brand is required for PRODUCT cost source`);
+      if (c.priceTier !== undefined && (g.costSource !== 'PRODUCT' || !PRICE_TIERS.includes(c.priceTier))) errors.push(`${c.id}: priceTier must be one of ${PRICE_TIERS} (PRODUCT channels only)`);
       if (!(c.discounts || []).length || c.discounts.length > 3) errors.push(`${c.id}: 1–3 discounts required`);
       (c.discounts || []).forEach((d) => {
         const vals = [d.default, d.min ?? 0, d.max ?? 0.99];
@@ -81,13 +82,13 @@ async function seed(pool, cfg, groups) {
       for (const [ci, ch] of g.channels.entries()) {
         channelIds.push(ch.id);
         await c.query(
-          `insert into channels (id, group_id, name, brand, id_prefix, formula, discounts, key_label, description, sort, active)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+          `insert into channels (id, group_id, name, brand, id_prefix, formula, discounts, key_label, description, sort, price_tier, active)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true)
            on conflict (id) do update set group_id = excluded.group_id, name = excluded.name, brand = excluded.brand,
              id_prefix = excluded.id_prefix, formula = excluded.formula, discounts = excluded.discounts,
-             key_label = excluded.key_label, description = excluded.description, sort = excluded.sort, active = true`,
+             key_label = excluded.key_label, description = excluded.description, sort = excluded.sort, price_tier = excluded.price_tier, active = true`,
           [ch.id, g.id, ch.name, ch.brand ? ch.brand.toUpperCase() : null, ch.idPrefix, ch.formula, JSON.stringify(ch.discounts),
-            ch.keyLabel || '', ch.description || '', gi * 100 + ci]);
+            ch.keyLabel || '', ch.description || '', gi * 100 + ci, ch.priceTier || null]);
         await c.query('insert into id_counters (prefix) values ($1) on conflict do nothing', [ch.idPrefix]);
       }
     }

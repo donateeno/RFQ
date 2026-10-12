@@ -141,13 +141,20 @@ function createApp(deps) {
   integration.post('/import/:type', async (req, res) => {
     try {
       const out = await importData(db, {
-        type: req.params.type, values: req.body && req.body.values, brand: req.query.brand, group: req.query.group,
+        type: req.params.type, values: req.body && req.body.values, sheets: req.body && req.body.sheets, brand: req.query.brand, group: req.query.group,
         today: service.todayIso(cfg.timezone), user: 'n8n', newListFutureOnly: true,
         priceList: req.query.priceList ? { name: String(req.query.priceList), effectiveFrom: req.query.effectiveFrom } : null
       });
-      await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT', $1)`, [JSON.stringify({ type: req.params.type, imported: out.imported })]);
+      await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT', $1)`,
+        [JSON.stringify({ type: req.params.type, ...out, errors: (out.errors || []).slice(0, 20) })]);
       res.json({ ok: true, data: out });
-    } catch (e) { sendError(res, e, logger); }
+    } catch (e) {
+      if (e instanceof UserError) {
+        await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT_FAILED', $1)`,
+          [JSON.stringify({ type: req.params.type, priceList: req.query.priceList || '', error: e.message })]).catch(() => {});
+      }
+      sendError(res, e, logger);
+    }
   });
   integration.get('/requests', async (req, res) => {
     try {

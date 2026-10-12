@@ -137,4 +137,19 @@ class UserError extends Error {
   }
 }
 
-module.exports = { INDICATOR, FORMULAS, COST_SOURCES, round, netIncVat, indicatorFor, muBand, calculate, landedCost, roundUpTo, resolveDiscounts, UserError };
+const PRICE_TIERS = ['GT', 'DGT', 'BT'];
+
+/**
+ * Selling price of one product for one channel tier, as SMG MASTER columns H (GT), I (DGT) and R (BT) set it:
+ *   found in HOTPRICE (first row for the barcode) → that row's tier price, even when blank (e.g. "ยกเลิก")
+ *   else found in the Nationwide pricelist      → its PROMOTION price
+ *   else                                          → MASTER "ราคาขายพิเศษเดิม" (old special price)
+ * Blank or 0 means "no price".
+ * @param {{hot?: number|null, inHot: boolean, promotion?: number|null, inNationwide: boolean, oldSpecial?: number|null}} p
+ */
+function resolveTierPrice(p) {
+  const v = p.inHot ? p.hot : (p.inNationwide ? p.promotion : p.oldSpecial);
+  return Number(v) > 0 ? Number(v) : null;
+}
+
+module.exports = { INDICATOR, FORMULAS, COST_SOURCES, PRICE_TIERS, resolveTierPrice, round, netIncVat, indicatorFor, muBand, calculate, landedCost, roundUpTo, resolveDiscounts, UserError };

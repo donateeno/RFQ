@@ -5,7 +5,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { calculate, landedCost, indicatorFor, resolveDiscounts, roundUpTo } = require('../src/pricing');
+const { calculate, landedCost, indicatorFor, resolveDiscounts, roundUpTo, resolveTierPrice, PRICE_TIERS } = require('../src/pricing');
 const { loadPriceGroups, validatePriceGroups } = require('../src/seed');
 
 const groups = loadPriceGroups();
@@ -118,6 +118,20 @@ test('channel discount rules: OFFI minimum GP, BT fixed GP', () => {
   assert.deepEqual(resolveDiscounts(CH.BT_EVE, [0]), [0.278304]);
   assert.throws(() => resolveDiscounts(CH.GT_EVE, [0.18, 8, 0]), /ห้ามเกิน/);
   assert.throws(() => resolveDiscounts(CH.GT_EVE, ['abc']), /ตัวเลข/);
+});
+
+test('SMG MASTER OCT26-JAN27 columns H / I / R: hot price, else Nationwide promotion, else old special price', () => {
+  const tiers = (p) => PRICE_TIERS.map((t) => resolveTierPrice({ ...p, hot: p.hot && p.hot[t] }));
+  // HOB HP35-1Q/FGB (NTW in HOTPRICE): GT 1,490 / DGT 1,990 / BT 1,590, Nationwide promotion 1,590 not used
+  assert.deepEqual(tiers({ inHot: true, hot: { GT: 1490, DGT: 1990, BT: 1590 }, inNationwide: true, promotion: 1590, oldSpecial: 9990 }), [1490, 1990, 1590]);
+  // HOB TORQUE 72 CM. (OR, not in HOTPRICE): Nationwide promotion 5,990 in every column, old special 1,190 ignored
+  assert.deepEqual(tiers({ inHot: false, inNationwide: true, promotion: 5990, oldSpecial: 1190 }), [5990, 5990, 5990]);
+  // HOB HB73-2VC/TC (NOTFOUND): old special price 9,990
+  assert.deepEqual(tiers({ inHot: false, inNationwide: false, oldSpecial: 9990 }), [9990, 9990, 9990]);
+  // HOB SPIRAL 2B ("ยกเลิก" row in HOTPRICE, prices blank): blank, even with an old special price of 1,190
+  assert.deepEqual(tiers({ inHot: true, hot: { GT: null, DGT: null, BT: null }, inNationwide: false, oldSpecial: 1190 }), [null, null, null]);
+  // OVEN 35 ลิตร รุ่น BT135 (NOTFOUND, 0): no price
+  assert.deepEqual(tiers({ inHot: false, inNationwide: false, oldSpecial: 0 }), [null, null, null]);
 });
 
 test('ROUNDUP to thousands matches Excel', () => {

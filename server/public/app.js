@@ -96,10 +96,20 @@
   /** % MU cell: exact for the cost viewer, the band for supervisors */
   function muCell(r) { return canSeeCost() ? '<b>' + pct(r.mu) + '</b>' : '<span class="band">' + esc(r.muBand || '–') + '</span>'; }
   function muHead() { return canSeeCost() ? '%MU' : 'ช่วง MU'; }
+  var STATUS_TAG = { OR: 'ยกเลิก (OR)', EX: 'Exclusive (EX)', G: 'ของแถม (G)', MTO: 'สั่งผลิต (MTO)' };
   function itemTags(it) {
     if (!it) return '';
     return (it.nw ? '<span class="tag new">ใหม่</span>' : '') + (it.bundle ? '<span class="tag new">ชุดเซ็ต</span>' : '') +
-      (it.up ? '<span class="tag up">ราคาใหม่ ' + money(it.up) + '</span>' : '') + (it.ux ? '<span class="tag up">เลิกขายรอบหน้า</span>' : '');
+      (it.up ? '<span class="tag up">ราคาใหม่ ' + money(it.up) + '</span>' : '') + (it.ux ? '<span class="tag up">เลิกขายรอบหน้า</span>' : '') +
+      (it.st && STATUS_TAG[it.st] ? '<span class="tag old">' + esc(STATUS_TAG[it.st]) + '</span>' : '') +
+      (it.sc && it.sc !== 'NTW' ? '<span class="tag up">' + esc(it.sc) + '</span>' : '') +
+      (it.mk ? '<span class="tag old">' + esc(it.mk) + '</span>' : '');
+  }
+  /** Barcode, display list price ("ราคาป้าย") and display-unit category of an SMG product. */
+  function itemExtra(it) {
+    if (!it || !(it.bc || it.lp)) return '';
+    return '<div class="muted">' + (it.bc ? 'บาร์โค้ด ' + esc(it.bc) : '') + (it.lp ? (it.bc ? ' · ' : '') + 'ราคาป้าย ' + money(it.lp) + ' ฿' : '') +
+      (it.pc ? ' · Price Cat. ' + esc(it.pc) : '') + '</div>';
   }
   function priceListBanner() {
     var pl = S.boot.priceLists || {};
@@ -120,9 +130,28 @@
   function itemSet(chId) {
     var g = groupOf(chId), c = channel(chId);
     if (!g || !c) return '';
-    return g.costSource === 'PRODUCT' ? 'P-' + c.brand : (g.costSource === 'PROJECT' ? 'J-' : 'L-') + g.id;
+    return g.costSource === 'PRODUCT' ? 'P-' + c.brand + (c.priceTier ? '~' + c.priceTier : '') : (g.costSource === 'PROJECT' ? 'J-' : 'L-') + g.id;
   }
+  /** Same product list regardless of the channel's price tier (switching GT ↔ BT keeps the typed items). */
+  function itemFamily(chId) { return itemSet(chId).split('~')[0]; }
   function item(chId, key) { var set = S.items[itemSet(chId)]; return key && set ? set[String(key).trim().toUpperCase()] : null; }
+  /** Why a key has no entry for this channel: not sold in its price tier, or not found at all. */
+  function missingText(chId, key, notFound) {
+    var fam = S.items[itemFamily(chId)];
+    if (fam && fam[String(key).trim().toUpperCase()]) return '<span style="color:var(--danger)">ไม่มีราคาขายของช่องทางนี้ในรอบราคาปัจจุบัน</span>';
+    return '<span style="color:var(--danger)">' + notFound + '</span>';
+  }
+  var TIERS = ['GT', 'DGT', 'BT'];
+  /** [set, price] pairs: the brand set (base price) plus one set per channel tier (that tier's price). */
+  function itemSets(brand, p, t) {
+    var out = [['P-' + brand, p]];
+    TIERS.forEach(function (tier) {
+      var tp = t ? t[tier] : p;
+      if (t && (tp === null || tp === undefined)) return;
+      out.push(['P-' + brand + '~' + tier, tp]);
+    });
+    return out;
+  }
   function keyLabel(ch) { return ch.keyLabel || 'สินค้า'; }
   function normalLabel(chId) { return groupOf(chId).costSource === 'LANDED' ? 'ราคาแนะนำ' : 'ปกติ'; }
   function defaultDiscs(ch) { return ch.discounts.map(function (d) { return pctInput(d.default); }); }
@@ -183,13 +212,22 @@
       var lists = {};
       function add(set, k, n, p, extra) {
         var e = { k: k, n: n || k, p: p };
-        if (extra) Object.keys(extra).forEach(function (x) { e[x] = extra[x]; });
-        (S.items[set] = S.items[set] || {})[String(k).toUpperCase()] = e;
-        var tags = (e.nw ? ' · ใหม่' : '') + (e.bundle ? ' · ชุดเซ็ต' : '') + (e.up ? ' · ราคาใหม่ ' + money(e.up) : '') + (e.ux ? ' · เลิกขายรอบหน้า' : '');
+        if (extra) Object.keys(extra).forEach(function (x) { if (extra[x] !== undefined && extra[x] !== null) e[x] = extra[x]; });
+        var items = (S.items[set] = S.items[set] || {});
+        items[String(k).toUpperCase()] = e;
+        if (e.bc && !items[e.bc]) items[e.bc] = e;
+        var tags = (e.nw ? ' · ใหม่' : '') + (e.bundle ? ' · ชุดเซ็ต' : '') + (e.up ? ' · ราคาใหม่ ' + money(e.up) : '') + (e.ux ? ' · เลิกขายรอบหน้า' : '') +
+          (e.st && STATUS_TAG[e.st] ? ' · ' + STATUS_TAG[e.st] : '') + (e.bc ? ' · ' + e.bc : '');
         (lists[set] = lists[set] || []).push('<option value="' + esc(k) + '">' + (n && n !== k ? esc(n) + ' · ' : '') + (p ? money(p) + ' ฿' : '') + esc(tags) + '</option>');
       }
-      b.products.forEach(function (p) { add('P-' + p.b, p.k, p.n, p.p, { nw: p.nw, up: p.up, ux: p.ux }); });
-      b.bundles.forEach(function (x) { add('P-' + x.b, x.k, x.n, x.p, { bundle: true }); });
+      b.products.forEach(function (p) {
+        itemSets(p.b, p.p, p.t).forEach(function (sp) {
+          var tier = sp[0].split('~')[1];
+          add(sp[0], p.k, p.n, sp[1], { nw: p.nw, ux: p.ux, up: tier && p.t ? (p.ut ? p.ut[tier] : null) : p.up,
+            bc: p.bc, st: p.st, sc: p.sc, mk: p.mk, lp: p.lp, pc: p.pc });
+        });
+      });
+      b.bundles.forEach(function (x) { itemSets(x.b, x.p, x.t).forEach(function (sp) { add(sp[0], x.k, x.n, sp[1], { bundle: true }); }); });
       b.projects.forEach(function (p) { add('J-' + p.g, p.k, p.n, p.p); });
       b.landed.forEach(function (p) { add('L-' + p.g, p.k, p.n, p.p); });
       S.lists = lists;
@@ -260,7 +298,7 @@
       '</div><div class="card"><div id="pc-result"></div></div></div>';
 
     bindPicker('pc-pick', function (id) {
-      if (itemSet(id) !== itemSet(S.pc.channelId)) S.pc.productKey = '';
+      if (itemFamily(id) !== itemFamily(S.pc.channelId)) S.pc.productKey = '';
       S.pc.channelId = id; S.pc.discs = defaultDiscs(channel(id)); S.pc.result = null;
       viewCheck(); check();
     });
@@ -285,8 +323,8 @@
     function prodInfo() {
       var p = item(ch.id, S.pc.productKey);
       $('#pc-prod-info').innerHTML = p
-        ? (p.n !== p.k ? esc(p.n) + ' · ' : '') + (p.p ? normalLabel(ch.id) + ' <b>' + money(p.p) + '</b> ฿' : '') + itemTags(p)
-        : (S.pc.productKey ? '<span style="color:var(--danger)">ไม่พบในรายการราคาปัจจุบัน</span>' : '');
+        ? (p.n !== p.k ? esc(p.n) + ' · ' : '') + (p.p ? normalLabel(ch.id) + ' <b>' + money(p.p) + '</b> ฿' : '') + itemTags(p) + itemExtra(p)
+        : (S.pc.productKey ? missingText(ch.id, S.pc.productKey, 'ไม่พบในรายการราคาปัจจุบัน') : '');
     }
   }
 
@@ -347,7 +385,7 @@
   function startCart(channelId) {
     if (S.cart && S.cart.channelId === channelId) return;
     var keep = S.cart || {};
-    var keepLines = S.cart && itemSet(S.cart.channelId) === itemSet(channelId);
+    var keepLines = S.cart && itemFamily(S.cart.channelId) === itemFamily(channelId);
     S.cart = {
       channelId: channelId, customer: keep.customer || '', project: keep.project || '', note: keep.note || '',
       start: keep.start || S.boot.today, end: keep.end || addDaysIso(S.boot.today, S.boot.settings.defaultValidityDays),
@@ -380,7 +418,7 @@
     bindPicker('nr-pick', function (id) {
       if (id === c.channelId) return;
       var hasLines = c.lines.some(function (l) { return l.productKey; });
-      if (hasLines && itemSet(id) !== itemSet(c.channelId) && !confirm('ช่องทางนี้ใช้รายการสินค้าคนละชุด รายการที่กรอกไว้จะถูกล้าง ต้องการต่อหรือไม่?')) return;
+      if (hasLines && itemFamily(id) !== itemFamily(c.channelId) && !confirm('ช่องทางนี้ใช้รายการสินค้าคนละชุด รายการที่กรอกไว้จะถูกล้าง ต้องการต่อหรือไม่?')) return;
       startCart(id);
       viewNew();
       S.cart.lines.forEach(function (l, i) { lineCheck(i); });
@@ -414,8 +452,8 @@
   }
   function npText(ch, l) {
     var p = item(ch.id, l.productKey);
-    if (p) return (p.n !== p.k ? esc(p.n) + ' · ' : '') + (p.p ? normalLabel(ch.id) + ' ' + money(p.p) + ' ฿' : '') + itemTags(p);
-    return l.productKey ? '<span style="color:var(--danger)">ไม่พบในรายการราคาปัจจุบัน (จะส่งแบบไม่มีต้นทุน)</span>' : '';
+    if (p) return (p.n !== p.k ? esc(p.n) + ' · ' : '') + (p.p ? normalLabel(ch.id) + ' ' + money(p.p) + ' ฿' : '') + itemTags(p) + (p.bc ? ' <span class="muted">' + esc(p.bc) + '</span>' : '');
+    return l.productKey ? missingText(ch.id, l.productKey, 'ไม่พบในรายการราคาปัจจุบัน (จะส่งแบบไม่มีต้นทุน)') : '';
   }
   function lineInd(l) {
     if (l.busy) return '<span class="spin"></span>';
@@ -925,7 +963,7 @@
       btn.disabled = true;
       run('createBundle', { brand: f.brand, label: f.label, items: f.rows.map(function (r) { return { productKey: r.k.trim(), qty: r.q }; }) }).then(function (b) {
         S.boot.bundles.push(b);
-        addItem('P-' + b.b, b.k, b.n, b.p, { bundle: true });
+        itemSets(b.b, b.p, b.t).forEach(function (sp) { addItem(sp[0], b.k, b.n, sp[1], { bundle: true }); });
         S.bf = null;
         toast('สร้างชุดเซ็ต "' + b.k + '" แล้ว');
         viewBundles();
@@ -988,7 +1026,7 @@
         run('deleteBundle', id).then(function () {
           var b = S.boot.bundles.filter(function (x) { return x.id === id; })[0];
           S.boot.bundles = S.boot.bundles.filter(function (x) { return x.id !== id; });
-          if (b && S.items['P-' + b.b]) delete S.items['P-' + b.b][b.k.toUpperCase()];
+          if (b) Object.keys(S.items).forEach(function (set) { if (set === 'P-' + b.b || set.indexOf('P-' + b.b + '~') === 0) delete S.items[set][b.k.toUpperCase()]; });
           toast('ลบชุดเซ็ตแล้ว'); renderBundleList();
         }).catch(fail);
       });
@@ -1023,6 +1061,32 @@
     run('getAdminInfo').then(renderAdmin).catch(fail);
   }
 
+  /** SMG catalogue sync (n8n ← cost file, Nationwide pricelist, SMG MASTER): last result and "sync now". */
+  function timeTh(iso) {
+    try { return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' }) + ' น.'; } catch (e) { return ''; }
+  }
+  function syncCard(x, configured) {
+    var body;
+    if (!x) body = '<p class="muted">ยังไม่เคยซิงค์</p>';
+    else if (!x.ok) body = '<div class="notice" style="border-color:var(--danger)"><b>ซิงค์ไม่สำเร็จ</b> ' + esc(dateTh(x.at)) + ' ' + esc(timeTh(x.at)) + '<br>' + esc(x.error) + '</div>';
+    else {
+      var st = Object.keys(x.statuses).sort(function (a, b) { return (a === '-') - (b === '-') || x.statuses[b] - x.statuses[a]; })
+        .map(function (k) { return (k === '-' ? 'ไม่อยู่ใน Pricelist' : esc(k)) + ' ' + x.statuses[k]; }).join(' · ');
+      body = '<dl class="kv"><dt>ล่าสุด</dt><dd>' + esc(dateTh(x.at)) + ' ' + esc(timeTh(x.at)) + ' · รอบ ' + esc(x.priceList) + '</dd>' +
+        '<dt>สินค้า</dt><dd>' + x.imported + ' รายการ (มีต้นทุน ' + x.withCost + ', ไม่มีต้นทุน ' + x.withoutCost + ')</dd>' +
+        '<dt>สถานะ Pricelist</dt><dd>' + (st || '–') + '</dd>' +
+        '<dt>ข้ามต้นทุน (ST = N)</dt><dd>' + x.notForSale + (x.blankSaleStatus ? ' · ST ว่าง ' + x.blankSaleStatus + ' (นำเข้า)' : '') + '</dd></dl>' +
+        (x.masterMismatchCount ? '<div class="banner" style="margin:8px 0 0">ราคาที่ระบบคำนวณไม่ตรงกับคอลัมน์ H/I/R ของ SMG MASTER ' + x.masterMismatchCount + ' รายการ: ' + x.masterMismatches.slice(0, 15).map(esc).join(', ') + (x.masterMismatchCount > 15 ? ' …' : '') + '</div>' : '') +
+        (x.duplicateBarcodes.length ? '<div class="banner" style="margin:8px 0 0">บาร์โค้ดซ้ำในชีต (ใช้แถวแรก): ' + x.duplicateBarcodes.slice(0, 15).map(esc).join(', ') + '</div>' : '') +
+        (x.badBarcodes ? '<p class="hint">บาร์โค้ดไม่ถูกต้อง (ข้าม) ' + x.badBarcodes + ' แถว</p>' : '');
+    }
+    return '<div class="card stack-gap"><div class="row" style="justify-content:space-between"><h2 style="margin:0">ซิงค์ราคา SMG จาก Google Sheets</h2><div class="row">' +
+      '<button class="btn small ghost" id="sync-refresh">รีเฟรช</button>' +
+      (configured ? '<button class="btn small primary" id="sync-go">ซิงค์ราคาตอนนี้</button>' : '') + '</div></div>' +
+      '<p class="hint">ต้นทุน: COST UPDATE 2021 (คอลัมน์ P, ไม่รวม ST = N) · ราคาฐาน: SMG PRICELIST NATIONWIDE · Hot price: SMG MASTER (GT / DGT ออนไลน์ / BT) — n8n ซิงค์ทุกวัน' +
+      (configured ? '' : ' · ยังไม่ได้ตั้งค่า SYNC_WEBHOOK_URL ที่เซิร์ฟเวอร์') + '</p>' + body + '</div>';
+  }
+
   function renderAdmin(a) {
     var c = a.counts;
     var editable = ['VAT_RATE', 'DEFAULT_VALIDITY_DAYS', 'MAX_VALIDITY_DAYS', 'NOTIFY_EMAILS', 'PRICE_CHECK_ALERT', 'PRICE_CHECK_LIMIT', 'PRICE_CHECK_PER_HOUR'];
@@ -1030,7 +1094,7 @@
     var rulesText = function (rules) {
       return (rules || []).map(function (r) { return '<code>' + esc(r.indicator) + ' ' + (r.below !== undefined ? '&lt; ' + pct(r.below, 0) : '≤ ' + pct(r.upTo, 0)) + '</code>'; }).join(' ') + ' <code>OKAY</code>';
     };
-    $('#adm').innerHTML =
+    $('#adm').innerHTML = syncCard(a.catalogSync, a.syncConfigured) +
       '<div class="grid-2"><div class="card"><h2>นำเข้าข้อมูล (CSV)</h2>' +
       '<p class="hint">Google Sheets → File → Download → Comma-separated values (.csv) ของแท็บที่ต้องการ · n8n สามารถส่งข้อมูลเดียวกันอัตโนมัติผ่าน /api/integrations/import</p>' +
       '<div class="fields"><div class="field wide"><label>ประเภท</label><select id="imp-type">' + IMPORT_TYPES.map(function (t) { return '<option value="' + t[0] + '">' + esc(t[1]) + '</option>'; }).join('') + '</select></div>' +
@@ -1105,6 +1169,13 @@
     };
     $('#imp-type').addEventListener('change', syncImp);
     syncImp();
+    if ($('#sync-go')) $('#sync-go').addEventListener('click', function () {
+      var btn = $('#sync-go');
+      btn.disabled = true;
+      run('requestCatalogSync').then(function () { toast('สั่งซิงค์แล้ว — n8n จะดึงข้อมูลภายใน 1–2 นาที กดรีเฟรชเพื่อดูผล'); })
+        .catch(fail).then(function () { btn.disabled = false; });
+    });
+    if ($('#sync-refresh')) $('#sync-refresh').addEventListener('click', function () { run('getAdminInfo').then(renderAdmin).catch(fail); });
     $('#pl-new-go').addEventListener('click', function () {
       var name = $('#pl-new-name').value.trim(), eff = $('#pl-new-eff').value;
       if (!name || !eff) return toast('กรุณาระบุชื่อรอบและวันที่มีผล', true);

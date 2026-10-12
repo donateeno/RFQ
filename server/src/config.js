@@ -21,6 +21,8 @@ function load(env = process.env) {
     costViewers: list(env.COST_VIEWERS),
     integrationToken: env.INTEGRATION_TOKEN || '',
     notifyWebhookUrl: env.NOTIFY_WEBHOOK_URL || '',
+    // n8n webhook that starts the SMG catalogue sync (cost file + Nationwide pricelist + SMG MASTER)
+    syncWebhookUrl: env.SYNC_WEBHOOK_URL || '',
     devLogin: !production && env.DEV_LOGIN === '1',
     timezone: env.TZ || 'Asia/Bangkok'
   };

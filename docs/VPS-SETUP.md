@@ -106,8 +106,26 @@ Import each file in **n8n → Workflows → Import from file**. Then set its cre
 | `rfq-products-sync.json` | Google Sheets OAuth2, the same Header Auth | Spreadsheet ID of the GT file, `rfq.<domain>` |
 | `rfq-sheets-mirror.json` | Google Sheets OAuth2, Header Auth | A spreadsheet with a tab `APP_Requests_Mirror` (it contains cost — share it with no one but the cost viewer) |
 | `github-pr-reviewed.json` | Header Auth "GitHub → n8n token", Gmail | — |
+| `rfq-smg-sync.json` | Google Sheets OAuth2, Google Drive OAuth2, the same Header Auth (also on its webhook) | IDs of *COST UPDATE 2021 for import* and *SMG PRICELIST NATIONWIDE*, `rfq.<domain>`. Copy the webhook's **production URL** into `SYNC_WEBHOOK_URL` |
 
-## 8. Bring in the data (one time, as admin → ตั้งค่า → นำเข้าข้อมูล)
+## 8. Bring in the data
+
+**EVE / Evercook / Excel (automatic, `rfq-smg-sync.json`).** n8n reads three files every day at 06:15, and whenever an admin presses **ซิงค์ราคาตอนนี้** in ตั้งค่า:
+- *COST UPDATE 2021 for import* → sheet `2021`:
+  - A = barcode (EAN13), C = model
+  - P = cost (includes the 10% MKT fee)
+  - rows with ST (AQ) = `N` give no cost
+- *SMG PRICELIST NATIONWIDE* → sheet `Pricelist update`:
+  - A = status (S, OR, EX, G, MTO)
+  - F = normal (display) price, G = promotion (base) price
+  - I = display-unit price category
+- The newest *SMG MASTER <period>* file → sheets `MASTER` and `HOTPRICE`.
+
+The selling price per channel works like MASTER columns H (GT), I (DGT) and R (BT): the channel's hot price, otherwise the Nationwide promotion price, otherwise MASTER's old special price. Online channels use DGT. Showroom, Outlet and GT use GT. BT uses BT. Each sync compares the result with MASTER's own H/I/R and lists any differences in ตั้งค่า.
+
+Every new period: create the period first in **ตั้งค่า → รอบราคา → สร้างรอบราคา**, using the name in the MASTER file title (e.g. `OCT26-JAN27`) and its start date. Until it exists, the sync is refused and nothing changes. If a sheet's columns move, the sync stops with the column it expected. Foster and Joseph Space keep their own imports below.
+
+**Other data (one time, as admin → ตั้งค่า → นำเข้าข้อมูล)**
 In each Google Sheet tab, use **File → Download → CSV**, then upload it with the matching type:
 1. `_Cost&Price` → **cost_price_sheet**, with the price list name (e.g. `APR26`) and its effective date. `_CalDummy` → **cal_dummy_sheet**; each row becomes a shared bundle.
    Every new pricing period: import the new `_Cost&Price` under a **new** name (e.g. `AUG26`) with its start date. You can do this weeks ahead. Names ignore upper/lower case (`aug26` = `AUG26`).

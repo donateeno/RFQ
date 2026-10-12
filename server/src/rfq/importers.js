@@ -10,7 +10,7 @@
  *                       factory_rmb/FactoryRMB, exch_rate/ExCh. Rate, bp_disc/BP Disc., incoterm, misc_charge
  *   GT.EVE_RFQ | GT.FOSTER_RFQ | BT.EVE_RFQ | BT.FOSTER_RFQ | OFFI_RFQ   old request tabs
  */
-const { calculate, UserError } = require('../pricing');
+const { calculate, UserError, PRICE_TIERS, resolveTierPrice } = require('../pricing');
 const { tx } = require('../db');
 const { getSettings, getCatalog, lookupItem } = require('./catalog');
 
@@ -389,10 +389,140 @@ async function syncCounters(c) {
   }
 }
 
+// ---------------------------------------------------------------- SMG catalogue (n8n sync of three Google Sheets)
+
+/**
+ * Expected header text per sheet at fixed columns (0-based). A moved or renamed column stops the import
+ * instead of loading wrong numbers.
+ */
+const SMG_SHEETS = {
+  cost: { label: "COST UPDATE 2021 for import '2021'!A3:AQ", cols: { ean: [0, 'EAN13'], model: [2, "EVE's Model"], cost: [15, 'ราคาต้นทุนนำเข้า/หน่วย'], st: [42, 'ST'] } },
+  pricelist: { label: "SMG PRICELIST NATIONWIDE 'Pricelist update'!A2:I", cols: {
+    status: [0, 'STATUS'], ean: [1, 'EAN13'], brand: [2, 'BRAND'], category: [3, 'CATEGORY'], name: [4, 'DESCRIPTION/MODEL'],
+    normal: [5, 'NORMAL'], promotion: [6, 'PROMOTION'], priceCat: [8, 'PRICE CAT.'] } },
+  master: { label: "SMG MASTER 'MASTER'!A1:R", cols: {
+    item: [0, 'Item No.'], brand: [1, 'ยี่ห้อ'], name: [2, 'Item Description'], group: [4, 'Group Name'], oldSpecial: [6, 'ราคาขายพิเศษเดิม'],
+    GT: [7, 'GT HOTPRICE'], DGT: [8, 'DGT HOTPRICE'], BT: [17, 'BT HOTPRICE'] } },
+  hot: { label: "SMG MASTER 'HOTPRICE'!A1:G", cols: {
+    saleCh: [0, 'SALE CH.'], ean: [1, 'EAN13'], name: [3, 'MODEL NAME'], BT: [4, 'BT HOTPRICE'], DGT: [5, 'DGT HOTPRICE'], GT: [6, 'GT HOTPRICE'] } }
+};
+const SMG_MAKES = ['EVE', 'EVERCOOK', 'EXCEL'];
+const colName = (i) => (i >= 26 ? String.fromCharCode(64 + Math.floor(i / 26)) : '') + String.fromCharCode(65 + (i % 26));
+const normHead = (s) => String(s || '').replace(/\s+/g, ' ').trim().toUpperCase();
+
+function smgRows(sheets, name) {
+  const spec = SMG_SHEETS[name];
+  const values = sheets && sheets[name];
+  if (!Array.isArray(values) || values.length < 2) throw new UserError(`ไม่มีข้อมูลจาก ${spec.label}`);
+  const head = values[0] || [];
+  const wrong = Object.values(spec.cols).filter(([i, h]) => normHead(head[i]) !== normHead(h))
+    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${h}" แต่พบ "${cell(head, i)}"`);
+  if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับที่ระบบรู้จัก — ${wrong.join('; ')}`);
+  return values.slice(1).map((r) => {
+    const o = {};
+    for (const [k, [i]] of Object.entries(spec.cols)) o[k] = cell(r, i);
+    return o;
+  });
+}
+
+const isEan = (s) => /^\d{8,14}$/.test(s);
+const price = (v) => { const n = toNum(v); return n > 0 ? n : null; };
+
+/**
+ * Builds the EVE / Evercook / Excel catalogue of one price list from the four sheet ranges and replaces
+ * that list's SMG products in one transaction. Cost = cost file column P where ST (AQ) is not "N".
+ * Selling price per tier = resolveTierPrice (MASTER H / I / R logic); the result is checked against
+ * MASTER's own H / I / R and differences are reported (barcodes only, never cost).
+ */
+async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) {
+  const costRows = smgRows(sheets, 'cost');
+  const plRows = smgRows(sheets, 'pricelist');
+  const masterRows = smgRows(sheets, 'master');
+  const hotRows = smgRows(sheets, 'hot');
+  const report = { costRows: 0, notForSale: 0, blankSaleStatus: 0, duplicateBarcodes: [], badBarcodes: 0 };
+
+  const first = (rows, keep) => {
+    const m = new Map();
+    for (const r of rows) {
+      if (!isEan(r.ean)) { if (r.ean) report.badBarcodes++; continue; }
+      if (keep && !keep(r)) continue;
+      if (m.has(r.ean)) { if (report.duplicateBarcodes.length < 50) report.duplicateBarcodes.push(r.ean); continue; }
+      m.set(r.ean, r);
+    }
+    return m;
+  };
+  const models = new Map();   // model names from every cost row (ST only decides whether the cost is used)
+  costRows.forEach((r) => { if (isEan(r.ean) && r.model && !models.has(r.ean)) models.set(r.ean, r.model); });
+  const cost = first(costRows, (r) => {
+    report.costRows++;
+    const st = r.st.toUpperCase();
+    if (st === 'N') { report.notForSale++; return false; }
+    if (!st) report.blankSaleStatus++;
+    return true;
+  });
+  const smgMake = (r) => !r.brand || SMG_MAKES.includes(r.brand.toUpperCase());   // Foster rows come later, in their own import
+  const pl = first(plRows.filter(smgMake));
+  const hot = first(hotRows);
+  const master = first(masterRows.filter((r) => r.brand && smgMake(r)).map((r) => Object.assign(r, { ean: r.item })));
+
+  const eans = new Set([...master.keys(), ...pl.keys(), ...hot.keys(), ...cost.keys()]);
+  const products = [];
+  const mismatches = [];
+  const usedKeys = new Map();
+  let skipped = 0;
+  for (const ean of eans) {
+    const c = cost.get(ean); const n = pl.get(ean); const h = hot.get(ean); const m = master.get(ean);
+    const tiers = {};
+    for (const t of PRICE_TIERS) {
+      tiers[t] = resolveTierPrice({ inHot: !!h, hot: h && price(h[t]), inNationwide: !!n, promotion: n && price(n.promotion), oldSpecial: m && price(m.oldSpecial) });
+    }
+    const unitCost = c ? price(c.cost) : null;
+    const base = n ? price(n.promotion) : (m ? price(m.oldSpecial) : null);
+    if (!unitCost && !base && PRICE_TIERS.every((t) => !tiers[t])) { skipped++; continue; }
+    if (m && PRICE_TIERS.some((t) => (price(m[t]) || null) !== tiers[t]) && mismatches.length < 100) mismatches.push(ean);
+    let key = models.get(ean) || (m && m.name) || (n && n.name) || (h && h.name) || ean;
+    key = key.slice(0, 190);
+    if (usedKeys.has(key.toUpperCase())) key = `${key} [${ean}]`;
+    usedKeys.set(key.toUpperCase(), ean);
+    products.push({
+      key, name: (n && n.name) || (m && m.name) || (h && h.name) || key, barcode: ean,
+      make: ((n && n.brand) || (m && m.brand) || 'EVE').toUpperCase(), category: (m && m.group) || (n && n.category) || '',
+      status: n ? n.status.toUpperCase() : '', saleChannel: h ? h.saleCh : '', priceCat: n ? n.priceCat.toUpperCase() : '',
+      listPrice: n ? price(n.normal) : null, cost: unitCost, normalPrice: base, tiers
+    });
+  }
+
+  const list = await tx(db, async (c) => {
+    const pl2 = await resolvePriceList(c, priceList, today, user, futureOnly);
+    await c.query(`delete from products where price_list_id = $1 and brand = 'EVE' and source = 'SMG'`, [pl2.id]);
+    for (const p of products) {
+      await c.query(
+        `insert into products (price_list_id, brand, key, name, cost, normal_price, source, barcode, make, category, status, sale_channel,
+           price_cat, list_price, price_gt, price_dgt, price_bt, tiered, updated_at)
+         values ($1, 'EVE', $2, $3, $4, $5, 'SMG', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true, now())
+         on conflict (price_list_id, brand, key_norm) do update set name = excluded.name, cost = excluded.cost, normal_price = excluded.normal_price,
+           source = 'SMG', barcode = excluded.barcode, make = excluded.make, category = excluded.category, status = excluded.status,
+           sale_channel = excluded.sale_channel, price_cat = excluded.price_cat, list_price = excluded.list_price, price_gt = excluded.price_gt,
+           price_dgt = excluded.price_dgt, price_bt = excluded.price_bt, tiered = true, updated_at = now()`,
+        [pl2.id, p.key, p.name, p.cost, p.normalPrice, p.barcode, p.make, p.category, p.status, p.saleChannel, p.priceCat, p.listPrice,
+          p.tiers.GT, p.tiers.DGT, p.tiers.BT]);
+    }
+    return pl2;
+  });
+  const statuses = {};
+  products.forEach((p) => { statuses[p.status || '-'] = (statuses[p.status || '-'] || 0) + 1; });
+  return {
+    imported: products.length, priceList: list.name, effectiveFrom: list.effectiveFrom, newPriceList: list.created,
+    withCost: products.filter((p) => p.cost).length, withoutCost: products.filter((p) => !p.cost).length, skippedNoPrice: skipped,
+    statuses, masterMismatchCount: mismatches.length, masterMismatches: mismatches.slice(0, 50), ...report
+  };
+}
+
 // ---------------------------------------------------------------- entry point
 
 /** @param {{newListFutureOnly?: boolean}} opts newListFutureOnly: set for n8n (see resolvePriceList) */
-async function importData(db, { type, values, brand, group, today, priceList, user, newListFutureOnly }) {
+async function importData(db, { type, values, sheets, brand, group, today, priceList, user, newListFutureOnly }) {
+  if (type === 'smg_catalog') return { type, ...(await importSmgCatalog(db, sheets, priceList, today, user, newListFutureOnly)) };
   if (!Array.isArray(values) || values.length < 2) throw new UserError('ไฟล์ว่างหรือไม่มีข้อมูล');
   if (values.length > 60000) throw new UserError('ข้อมูลมากเกินไป (สูงสุด 60,000 แถว)');
   switch (type) {
