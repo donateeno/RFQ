@@ -404,7 +404,12 @@ const SMG_SHEETS = {
     item: [0, 'Item No.'], brand: [1, 'ยี่ห้อ'], name: [2, 'Item Description'], group: [4, 'Group Name'], oldSpecial: [6, 'ราคาขายพิเศษเดิม'],
     GT: [7, 'GT HOTPRICE'], DGT: [8, 'DGT HOTPRICE'], BT: [17, 'BT HOTPRICE'] } },
   hot: { label: "SMG MASTER 'HOTPRICE'!A1:G", cols: {
-    saleCh: [0, 'SALE CH.'], ean: [1, 'EAN13'], name: [3, 'MODEL NAME'], BT: [4, 'BT HOTPRICE'], DGT: [5, 'DGT HOTPRICE'], GT: [6, 'GT HOTPRICE'] } }
+    saleCh: [0, 'SALE CH.'], ean: [1, 'EAN13'], name: [3, 'MODEL NAME'], BT: [4, 'BT HOTPRICE'], DGT: [5, 'DGT HOTPRICE'], GT: [6, 'GT HOTPRICE'] } },
+  // Optional: set (bundle SKU) costs. K = D+F+H+J, each part's '2021'!P. "Subset1 Description" in G is the sheet's own typo.
+  sets: { label: "COST UPDATE 2021 for import 'relationship'!A2:AA", cols: {
+    ean: [0, 'EAN13'], part1: [2, 'Subset1 Description'], cost1: [3, 'Cost subset1'], part2: [4, 'Subset2 Description'], cost2: [5, 'Cost subset2'],
+    part3: [6, ['Subset1 Description', 'Subset3 Description']], cost3: [7, 'Cost subset3'], part4: [8, 'Subset4 Description'], cost4: [9, 'Cost subset4'],
+    total: [10, 'Total Set Cost'], ean2: [26, 'EAN13'] } }
 };
 const SMG_MAKES = ['EVE', 'EVERCOOK', 'EXCEL'];
 const colName = (i) => (i >= 26 ? String.fromCharCode(64 + Math.floor(i / 26)) : '') + String.fromCharCode(65 + (i % 26));
@@ -415,8 +420,8 @@ function smgRows(sheets, name) {
   const values = sheets && sheets[name];
   if (!Array.isArray(values) || values.length < 2) throw new UserError(`ไม่มีข้อมูลจาก ${spec.label}`);
   const head = values[0] || [];
-  const wrong = Object.values(spec.cols).filter(([i, h]) => normHead(head[i]) !== normHead(h))
-    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${h}" แต่พบ "${cell(head, i)}"`);
+  const wrong = Object.values(spec.cols).filter(([i, h]) => ![].concat(h).some((x) => normHead(head[i]) === normHead(x)))
+    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ "${cell(head, i)}"`);
   if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับที่ระบบรู้จัก — ${wrong.join('; ')}`);
   return values.slice(1).map((r) => {
     const o = {};
@@ -429,6 +434,41 @@ const isEan = (s) => /^\d{8,14}$/.test(s);
 const price = (v) => { const n = toNum(v); return n > 0 ? n : null; };
 
 /**
+ * Set costs from the 'relationship' tab, keyed by set barcode (A, else AA). A set's total (K) is used only when every
+ * named part has a cost above 0, K is a number and K equals the sum of the parts, and every row of that barcode agrees:
+ * the sheet turns a missing part into 0, and a cost that is too low is worse than no cost. Report lists barcodes only.
+ */
+const SET_SUM_TOLERANCE = 0.05;      // K against the sum of up to 4 part costs, each shown to 2 decimals
+const SET_SAME_TOLERANCE = 0.005;    // two rows of one set barcode must show the same K
+
+function setCosts(sheets) {
+  const out = { costs: new Map(), report: null };
+  if (!sheets || sheets.sets === undefined || sheets.sets === null) return out;
+  const r = { setRows: 0, setNoBarcode: 0, setNoTotal: [], setZeroPart: [], setSumMismatch: [], setConflict: [] };
+  out.report = r;
+  if (Array.isArray(sheets.sets) && sheets.sets.length < 2) return out;   // empty tab: no set costs, the rest still imports
+  const rows = smgRows(sheets, 'sets');
+  const seen = new Map();   // ean -> total, or null when that barcode cannot be used
+  const reject = (list, ean) => { if (list.length < 50 && !list.includes(ean)) list.push(ean); seen.set(ean, null); };
+  for (const row of rows) {
+    const parts = [1, 2, 3, 4].map((i) => ({ name: row['part' + i], cost: toNum(row['cost' + i]) })).filter((p) => p.name);
+    if (!parts.length && !row.ean && !row.ean2) continue;
+    r.setRows++;
+    const ean = isEan(row.ean) ? row.ean : (isEan(row.ean2) ? row.ean2 : '');
+    if (!ean) { r.setNoBarcode++; continue; }
+    const total = toNum(row.total);
+    if (seen.has(ean) && seen.get(ean) === null) continue;
+    if (!(total > 0)) { reject(r.setNoTotal, ean); continue; }
+    if (!parts.length || parts.some((p) => !(p.cost > 0))) { reject(r.setZeroPart, ean); continue; }
+    if (Math.abs(parts.reduce((t, p) => t + p.cost, 0) - total) > SET_SUM_TOLERANCE) { reject(r.setSumMismatch, ean); continue; }
+    if (seen.has(ean) && Math.abs(seen.get(ean) - total) > SET_SAME_TOLERANCE) { reject(r.setConflict, ean); continue; }
+    seen.set(ean, total);
+  }
+  for (const [ean, total] of seen) if (total !== null) out.costs.set(ean, total);
+  return out;
+}
+
+/**
  * Builds the EVE / Evercook / Excel catalogue of one price list from the four sheet ranges and replaces
  * that list's SMG products in one transaction. Cost = cost file column P where ST (AQ) is not "N".
  * Selling price per tier = resolveTierPrice (MASTER H / I / R logic); the result is checked against
@@ -439,6 +479,7 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
   const plRows = smgRows(sheets, 'pricelist');
   const masterRows = smgRows(sheets, 'master');
   const hotRows = smgRows(sheets, 'hot');
+  const sets = setCosts(sheets);
   const report = { costRows: 0, notForSale: 0, blankSaleStatus: 0, duplicateBarcodes: [], badBarcodes: 0 };
 
   const first = (rows, keep) => {
@@ -453,10 +494,11 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
   };
   const models = new Map();   // model names from every cost row (ST only decides whether the cost is used)
   costRows.forEach((r) => { if (isEan(r.ean) && r.model && !models.has(r.ean)) models.set(r.ean, r.model); });
+  const notForSale = new Set();   // ST = N: no cost, not even a set cost
   const cost = first(costRows, (r) => {
     report.costRows++;
     const st = r.st.toUpperCase();
-    if (st === 'N') { report.notForSale++; return false; }
+    if (st === 'N') { report.notForSale++; notForSale.add(r.ean); return false; }
     if (!st) report.blankSaleStatus++;
     return true;
   });
@@ -476,7 +518,9 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
     for (const t of PRICE_TIERS) {
       tiers[t] = resolveTierPrice({ inHot: !!h, hot: h && price(h[t]), inNationwide: !!n, promotion: n && price(n.promotion), oldSpecial: m && price(m.oldSpecial) });
     }
-    const unitCost = c ? price(c.cost) : null;
+    let unitCost = c ? price(c.cost) : null;
+    const fromSet = !unitCost && !notForSale.has(ean) && sets.costs.has(ean);
+    if (fromSet) unitCost = sets.costs.get(ean);
     const base = n ? price(n.promotion) : (m ? price(m.oldSpecial) : null);
     if (!unitCost && !base && PRICE_TIERS.every((t) => !tiers[t])) { skipped++; continue; }
     if (m && PRICE_TIERS.some((t) => (price(m[t]) || null) !== tiers[t]) && mismatches.length < 100) mismatches.push(ean);
@@ -488,7 +532,7 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
       key, name: (n && n.name) || (m && m.name) || (h && h.name) || key, barcode: ean,
       make: ((n && n.brand) || (m && m.brand) || 'EVE').toUpperCase(), category: (m && m.group) || (n && n.category) || '',
       status: n ? n.status.toUpperCase() : '', saleChannel: h ? h.saleCh : '', priceCat: n ? n.priceCat.toUpperCase() : '',
-      listPrice: n ? price(n.normal) : null, cost: unitCost, normalPrice: base, tiers
+      listPrice: n ? price(n.normal) : null, cost: unitCost, fromSet, normalPrice: base, tiers
     });
   }
 
@@ -511,6 +555,14 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
   });
   const statuses = {};
   products.forEach((p) => { statuses[p.status || '-'] = (statuses[p.status || '-'] || 0) + 1; });
+  if (sets.report) {
+    const imported = new Set(products.map((p) => p.barcode));
+    const notIn = [...sets.costs.keys()].filter((e) => !imported.has(e));
+    Object.assign(report, sets.report, {
+      setCostUsed: products.filter((p) => p.fromSet).length,
+      setNotInCatalogue: notIn.length, setNotInCatalogueList: notIn.slice(0, 50)
+    });
+  }
   return {
     imported: products.length, priceList: list.name, effectiveFrom: list.effectiveFrom, newPriceList: list.created,
     withCost: products.filter((p) => p.cost).length, withoutCost: products.filter((p) => !p.cost).length, skippedNoPrice: skipped,
@@ -543,8 +595,8 @@ function mappingRows(sheets, name) {
   const values = sheets && sheets[name];
   if (!Array.isArray(values) || !values.length) throw new UserError(`ไม่มีข้อมูลจาก ${spec.label}`);
   const head = values[0] || [];
-  const wrong = Object.values(spec.cols).filter(([i, h]) => normHead(head[i]) !== normHead(h))
-    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${h}" แต่พบ "${cell(head, i)}"`);
+  const wrong = Object.values(spec.cols).filter(([i, h]) => ![].concat(h).some((x) => normHead(head[i]) === normHead(x)))
+    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ "${cell(head, i)}"`);
   if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับแม่แบบ — ${wrong.join('; ')}`);
   return values.slice(1).map((r) => {
     const o = {};

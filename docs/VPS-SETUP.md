@@ -126,7 +126,7 @@ certbot adds the HTTPS server block and the redirect.
 The daily loop: ask Claude Code or OpenClaw on the VPS for a change → it opens a PR → CI and the Claude review run → you get an email → you read the verdict and click Merge → it's deployed about 2 minutes later.
 
 ## 7. n8n workflows (`deploy/n8n/`)
-Import each file in **n8n → Workflows → Import from file**. Then set its credentials and IDs and activate it.
+Import each file in **n8n → Workflows → Import from file** (or `n8n import:workflow` inside the n8n container: each file has a fixed `id` and `active: false`, so importing a file again **replaces** that workflow with the placeholders and empty credentials, while a workflow first imported through the UI has another id and gets a duplicate instead). Then set its credentials and IDs and activate it.
 
 | File | Credentials | Set |
 |---|---|---|
@@ -143,6 +143,9 @@ Import each file in **n8n → Workflows → Import from file**. Then set its cre
   - A = barcode (EAN13), C = model
   - P = cost (includes the 10% MKT fee)
   - rows with ST (AQ) = `N` give no cost
+- *COST UPDATE 2021 for import* → sheet `relationship` (set costs, read with `'2021'` in one call):
+  - set barcode in A, or in AA when A is blank; parts in C/E/G/I with their costs in D/F/H/J; K = total set cost
+  - K is used only for a set barcode with no cost of its own in `2021`, and only when every named part has a cost above 0, K is a number equal to the parts' sum, and every row with that barcode agrees. Otherwise the set shows "ไม่มีต้นทุน" and is listed in ตั้งค่า. The live list of rows to fix is the `ตรวจสอบเซ็ต` tab of the same file.
 - *SMG PRICELIST NATIONWIDE* → sheet `Pricelist update`:
   - A = status (S, OR, EX, G, MTO)
   - F = normal (display) price, G = promotion (base) price
