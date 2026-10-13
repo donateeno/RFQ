@@ -186,6 +186,8 @@ function createApp(deps) {
       res.sendFile(path.join(PUBLIC, 'index.html'));
     } catch (e) { next(e); }
   });
+  // Public: the Google sign-in consent screen links here.
+  app.get('/privacy', (req, res) => res.sendFile(path.join(PUBLIC, 'privacy.html')));
   app.use(express.static(PUBLIC, { index: false, maxAge: cfg.production ? '1h' : 0 }));
   app.use((req, res) => res.status(404).send('Not found'));
   // eslint-disable-next-line no-unused-vars

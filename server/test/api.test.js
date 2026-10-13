@@ -366,6 +366,10 @@ test('static pages and health check', async () => {
   assert.equal((await fetch(env.base + '/healthz')).status, 200);
   const login = await (await fetch(env.base + '/login')).text();
   assert.match(login, /data-client_id="test-client"/);
+  assert.match(login, /href="\/privacy"/);
+  const privacy = await fetch(env.base + '/privacy', { redirect: 'manual' });
+  assert.equal(privacy.status, 200, 'the privacy policy is public (linked from the Google consent screen)');
+  assert.match(await privacy.text(), /นโยบายความเป็นส่วนตัว/);
   const csp = (await fetch(env.base + '/login')).headers.get('content-security-policy');
   assert.match(csp, /script-src 'self' https:\/\/accounts.google.com\/gsi\/client/);
   const res = await fetch(env.base + '/', { headers: { Cookie: sales.cookie } });
