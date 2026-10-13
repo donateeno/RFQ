@@ -1,0 +1,19 @@
+# Joins the Traefik that already serves n8n. Check names with:
+#   docker network ls        → TRAEFIK_NETWORK (the network the traefik container is on)
+#   docker inspect <traefik> → certresolver / entrypoint names in its command args
+services:
+  app:
+    networks: [internal, proxy]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK}
+      - traefik.http.routers.rfq.rule=Host(`${APP_DOMAIN}`)
+      - traefik.http.routers.rfq.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.rfq.tls=true
+      - traefik.http.routers.rfq.tls.certresolver=${TRAEFIK_CERTRESOLVER:-mytlschallenge}
+      - traefik.http.services.rfq.loadbalancer.server.port=3000
+
+networks:
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:?set TRAEFIK_NETWORK in .env}

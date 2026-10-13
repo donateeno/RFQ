@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RFQ Price Approval</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar" aria-label="เมนูหลัก">
+      <div class="side-brand"><span class="logo">RFQ</span><div class="side-title"><b>ขออนุมัติราคาพิเศษ</b><small>EVE · ราคาและการอนุมัติ</small></div></div>
+      <div class="side-label">เมนูหลัก</div>
+      <nav class="side-nav" id="tabs"></nav>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+    <div class="main-col">
+      <header class="topbar">
+        <button class="menu-btn" id="menu-btn" type="button" aria-label="เมนู" aria-controls="sidebar" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="crumb" id="crumb"></div>
+        <div class="who" id="who"></div>
+      </header>
+      <main id="view"><div class="loading"><span class="spin"></span> กำลังโหลด…</div></main>
+    </div>
+  </div>
+  <div class="actionbar" id="actionbar"></div>
+  <div id="datalists"></div>
+  <datalist id="dl-customers"></datalist>
+  <script src="/app.js"></script>
+</body>
+</html>

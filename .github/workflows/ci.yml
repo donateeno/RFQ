@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Server tests (Node + PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rfq
+          POSTGRES_PASSWORD: rfq
+          POSTGRES_DB: rfq_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rfq" --health-interval 5s --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: server
+    env:
+      TEST_DATABASE_URL: postgres://rfq:rfq@localhost:5432/rfq_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - name: Validate price-groups.json
+        run: npm run check-config
+      - run: npm test
+      - name: npm audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t rfq-app:ci server
+
+  apps-script:
+    name: Apps Script (interim version) tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+        working-directory: apps-script

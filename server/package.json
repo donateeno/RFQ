@@ -1,0 +1,24 @@
+{
+  "name": "rfq-server",
+  "version": "2.0.0",
+  "private": true,
+  "description": "EVE RFQ special-price approval — Node.js + PostgreSQL",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "DEV_LOGIN=1 node --watch src/index.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "check-config": "node -e \"require('./src/seed').loadPriceGroups(); console.log('price-groups.json OK')\""
+  },
+  "dependencies": {
+    "cookie-session": "2.1.1",
+    "express": "5.2.1",
+    "express-rate-limit": "8.7.0",
+    "google-auth-library": "10.4.0",
+    "helmet": "8.1.0",
+    "pg": "8.16.3"
+  }
+}

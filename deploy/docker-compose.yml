@@ -1,0 +1,43 @@
+# Base stack: PostgreSQL + RFQ app. Add ONE proxy file on top:
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d   (VPS already runs Traefik, e.g. Hostinger n8n template)
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d     (nothing listens on 80/443 yet)
+name: rfq
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rfq
+      POSTGRES_USER: rfq
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      TZ: Asia/Bangkok
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rfq -d rfq"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  app:
+    build: ../server
+    image: rfq-app:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://rfq:${POSTGRES_PASSWORD}@db:5432/rfq
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"   # host-only; the proxy publishes HTTPS
+    networks: [internal]
+
+volumes:
+  pgdata:
+
+networks:
+  internal:

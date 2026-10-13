@@ -1,0 +1,173 @@
+# VPS setup — Hostinger KVM 2 (Claude Code, n8n and OpenClaw already installed)
+
+The target setup:
+
+```
+Your Claude Code / OpenClaw on the VPS ──branch + PR──► GitHub ──► CI tests + Claude review (comments)
+                                                           │
+                                         you read the review and click Merge  (your approval)
+                                                           │
+                                     Deploy workflow ──SSH──► VPS: deploy/deploy.sh
+                                                           │
+           https://rfq.<your-domain> ──► Traefik/Caddy ──► rfq app (Docker) ──► PostgreSQL (Docker volume)
+                                                                 │        ▲
+                                                 emails via n8n ◄┘        └── n8n: daily cost sync, 15-min Sheet copy
+```
+
+KVM 2 (2 vCPU / 8 GB RAM) runs this app (~150 MB) next to n8n and OpenClaw without trouble.
+
+---
+
+## 1. DNS
+In your DNS (Hostinger hPanel → Domains → DNS), add an **A record**: `rfq` → the VPS IP. Wait until `ping rfq.<domain>` answers.
+
+## 2. Check what owns ports 80/443
+```bash
+docker ps --format 'table {{.Names}}\t{{.Ports}}'
+```
+- A **traefik** container on 80/443 (Hostinger's n8n template uses this): set `PROXY=traefik`. Then find its network and settings:
+  ```bash
+  docker inspect $(docker ps -qf name=traefik) --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'   # → TRAEFIK_NETWORK
+  docker inspect $(docker ps -qf name=traefik) --format '{{.Args}}' | tr ' ' '\n' | grep -E 'entrypoints|certresolver'
+  ```
+- If nothing listens on 80/443, set `PROXY=caddy`.
+- If something else owns them (e.g. the host nginx), set `PROXY=` (empty) and point that proxy at `http://127.0.0.1:3000`. For nginx, see [nginx in front](#nginx-in-front) below.
+
+## 3. A separate deploy user (keeps AI agents away from production)
+Agents running as your normal user should **not** be in the `docker` group, because docker access is root-equivalent.
+```bash
+sudo adduser --disabled-password --gecos "" deploy
+sudo usermod -aG docker deploy
+sudo mkdir -p /opt/rfq /opt/rfq-backups && sudo chown deploy:deploy /opt/rfq /opt/rfq-backups
+sudo -iu deploy
+ssh-keygen -t ed25519 -f ~/.ssh/github_ro -N ""      # read-only deploy key for git pull
+cat ~/.ssh/github_ro.pub
+```
+In GitHub, open **donateeno/RFQ → Settings → Deploy keys → Add deploy key**, paste the key and leave *write access* **off**. Then:
+```bash
+printf 'Host github.com\n  IdentityFile ~/.ssh/github_ro\n' >> ~/.ssh/config
+git clone git@github.com:donateeno/RFQ.git /opt/rfq
+```
+
+## 4. Google sign-in
+1. Go to https://console.cloud.google.com and create a project such as "EVE RFQ".
+2. **APIs & Services → OAuth consent screen**:
+   - If every domain in `ALLOWED_DOMAIN` belongs to the **same** Google Workspace account (for example, siammanor.com added as a secondary domain of eve.co.th), set User type to **Internal**.
+   - If the domains are separate Workspace accounts, set User type to **External** and press **Publish app**. A "Testing" app only admits listed test users.
+     - With only the basic sign-in scopes (email, profile), no Google verification is needed.
+     - The app itself refuses any account outside `ALLOWED_DOMAIN`.
+3. **Credentials → Create credentials → OAuth client ID**:
+   - Application type: **Web application**.
+   - Authorized JavaScript origins: `https://rfq.<domain>`. No redirect URI is needed.
+4. Copy the Client ID. It goes into `GOOGLE_CLIENT_ID` in step 5.
+
+## 5. Configure and start
+```bash
+cd /opt/rfq/deploy
+cp .env.example .env && chmod 600 .env
+for k in POSTGRES_PASSWORD SESSION_SECRET INTEGRATION_TOKEN; do sed -i "s/^$k=.*/$k=$(openssl rand -hex 32)/" .env; done
+nano .env        # APP_DOMAIN, APP_BASE_URL, GOOGLE_CLIENT_ID, NOTIFY_WEBHOOK_URL, PROXY, TRAEFIK_*
+bash deploy.sh   # builds, starts, waits for /healthz
+```
+`COST_VIEWERS` decides who can see cost, gain and exact %MU. It is only set here, on the server; nobody can grant it from inside the app.
+
+Open `https://rfq.<domain>` and sign in. Accounts listed in `BOOTSTRAP_ADMINS` / `BOOTSTRAP_SUPERVISORS` get their roles. Everyone else in an `ALLOWED_DOMAIN` domain joins as SALES automatically.
+
+Firewall: in **hPanel → VPS → Firewall**, allow only 22, 80 and 443. PostgreSQL is never published, and the app is bound to 127.0.0.1.
+
+Backups:
+```bash
+(crontab -l 2>/dev/null; echo "15 2 * * * /opt/rfq/deploy/backup.sh >> /opt/rfq-backups/backup.log 2>&1") | crontab -
+```
+Also turn on Hostinger's weekly VPS snapshot.
+
+### nginx in front
+Use this when the host nginx already serves 80/443 (with `PROXY=` empty in `.env`). Create `/etc/nginx/sites-available/rfq`:
+```nginx
+server {
+    listen 80;
+    server_name rfq.<domain>;
+    client_max_body_size 20m;
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}
+```
+Then run:
+```bash
+sudo ln -s /etc/nginx/sites-available/rfq /etc/nginx/sites-enabled/rfq
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d rfq.<domain>   # only once the DNS name resolves to this VPS
+```
+certbot adds the HTTPS server block and the redirect.
+
+## 6. GitHub: AI review + your approval + auto-deploy
+1. **Claude review token**: on the VPS, run `claude setup-token` (you're signed in to Claude Code there). In GitHub, go to **Settings → Secrets and variables → Actions → New repository secret** and add `CLAUDE_CODE_OAUTH_TOKEN`.
+2. **Claude GitHub App**: inside Claude Code, run `/install-github-app` and pick `donateeno/RFQ`. Alternatively install it from https://github.com/apps/claude.
+3. **Deploy secrets** (same page):
+   - `VPS_HOST`: the VPS IP.
+   - `VPS_USER`: `deploy`.
+   - `VPS_SSH_KEY`: the private key of a new key pair whose public key is in `/home/deploy/.ssh/authorized_keys`. Create it with `ssh-keygen -t ed25519 -f gh_deploy -N ""`.
+   - `VPS_KNOWN_HOSTS`: the output of `ssh-keyscan <VPS IP>`.
+4. **Settings → Environments → New environment `production`**. Optionally add yourself as a required reviewer to get a second approval step before each deploy.
+5. **Protect `main`**: go to **Settings → Rules → Rulesets → New branch ruleset**, set target branch `main`, then enable:
+   - *Restrict deletions*
+   - *Block force pushes*
+   - *Require a pull request before merging*
+   - *Require status checks to pass*: `Server tests (Node + PostgreSQL)`, `Docker image builds`, `review`
+
+   If the AI agents push **with your own GitHub account**, leave "required approvals" at 0. GitHub won't let you approve your own PR, so your approval is clicking **Merge** after reading Claude's review. If agents use a separate GitHub account or bot, set required approvals to 1 and enable *Require review from Code Owners*.
+6. Optional PR alert: import `deploy/n8n/github-pr-reviewed.json` into n8n, then add the secrets `N8N_PR_WEBHOOK_URL` and `N8N_PR_WEBHOOK_TOKEN`.
+
+The daily loop: ask Claude Code or OpenClaw on the VPS for a change → it opens a PR → CI and the Claude review run → you get an email → you read the verdict and click Merge → it's deployed about 2 minutes later.
+
+## 7. n8n workflows (`deploy/n8n/`)
+Import each file in **n8n → Workflows → Import from file**. Then set its credentials and IDs and activate it.
+
+| File | Credentials | Set |
+|---|---|---|
+| `rfq-notify.json` | Header Auth "RFQ integration token" (`Authorization` = `Bearer <INTEGRATION_TOKEN>`), Gmail | Copy the webhook's **production URL** into `NOTIFY_WEBHOOK_URL` |
+| `rfq-products-sync.json` | Google Sheets OAuth2, the same Header Auth | Spreadsheet ID of the GT file, `rfq.<domain>` |
+| `rfq-sheets-mirror.json` | Google Sheets OAuth2, Header Auth | A spreadsheet with a tab `APP_Requests_Mirror` (it contains cost — share it with no one but the cost viewer) |
+| `github-pr-reviewed.json` | Header Auth "GitHub → n8n token", Gmail | — |
+| `rfq-smg-sync.json` | Google Sheets OAuth2, Google Drive OAuth2, the same Header Auth (also on its webhook) | IDs of *COST UPDATE 2021 for import*, *SMG PRICELIST NATIONWIDE* and *Customer Price Mapping Template* (`PUT_MAPPING_FILE_ID_HERE`), `rfq.<domain>`. Copy the webhook's **production URL** into `SYNC_WEBHOOK_URL` |
+
+## 8. Bring in the data
+
+**EVE / Evercook / Excel (automatic, `rfq-smg-sync.json`).** n8n reads three files every day at 06:15, and whenever an admin presses **ซิงค์ราคาตอนนี้** in ตั้งค่า:
+- *COST UPDATE 2021 for import* → sheet `2021`:
+  - A = barcode (EAN13), C = model
+  - P = cost (includes the 10% MKT fee)
+  - rows with ST (AQ) = `N` give no cost
+- *SMG PRICELIST NATIONWIDE* → sheet `Pricelist update`:
+  - A = status (S, OR, EX, G, MTO)
+  - F = normal (display) price, G = promotion (base) price
+  - I = display-unit price category
+- The newest *SMG MASTER <period>* file → sheets `MASTER` and `HOTPRICE`.
+
+The selling price per channel works like MASTER columns H (GT), I (DGT) and R (BT): the channel's hot price, otherwise the Nationwide promotion price, otherwise MASTER's old special price. Online channels use DGT. Showroom, Outlet and GT use GT. BT uses BT. Each sync compares the result with MASTER's own H/I/R and lists any differences in ตั้งค่า.
+
+Every new period: create the period first in **ตั้งค่า → รอบราคา → สร้างรอบราคา**, using the name in the MASTER file title (e.g. `OCT26-JAN27`) and its start date. Until it exists, the sync is refused and nothing changes. If a sheet's columns move, the sync stops with the column it expected. Foster and Joseph Space keep their own imports below.
+
+**Customer price lookup (same workflow, second branch).** n8n also reads the *Customer Price Mapping Template* (tabs Term Library, Customer Groups, Group Terms, Channel Map, Customer Map, and Active Customers from row 6) and replaces the data behind **ราคาตามลูกค้า**. Each tab's header row is checked; rows that can't be used (an unknown term code, a wrong method or price tier, a % term without a value) are skipped and listed in ตั้งค่า → ข้อมูลราคาตามลูกค้า.
+
+**Other data (one time, as admin → ตั้งค่า → นำเข้าข้อมูล)**
+In each Google Sheet tab, use **File → Download → CSV**, then upload it with the matching type:
+1. `_Cost&Price` → **cost_price_sheet**, with the price list name (e.g. `APR26`) and its effective date. `_CalDummy` → **cal_dummy_sheet**; each row becomes a shared bundle.
+   Every new pricing period: import the new `_Cost&Price` under a **new** name (e.g. `AUG26`) with its start date. You can do this weeks ahead. Names ignore upper/lower case (`aug26` = `AUG26`).
+   The daily n8n sync uses the period name in `_ext_sheets!C3`. It only fills a list that already exists, so **create the new period first** in ตั้งค่า → รอบราคา → สร้างรอบราคา (name + start date). If the sheet already shows a name the app doesn't know, the sync fails with "ยังไม่มีในระบบ" and changes nothing, so prices never switch on the import day by accident.
+   If the import shows "ต้นทุนในชีตไม่ตรงกัน", the sheet's E:G cost (GT hot price) differs from the A:C master for those models. The app uses the E:G cost as the single cost for every price group.
+2. Joseph Space:
+   - Project costs: CSV with `project_key, customer, description, cost` → **project_costs**.
+   - `_Manual.Cal` → **landed_items**.
+3. Old requests: upload `GT.EVE_RFQ`, `GT.FOSTER_RFQ`, `BT.EVE_RFQ`, `BT.FOSTER_RFQ` and `OFFI_RFQ`, each with its own type. Re-running is safe: existing IDs are skipped.
+
+## 9. Updating by hand / rollback
+```bash
+sudo -iu deploy bash /opt/rfq/deploy/deploy.sh                       # latest main
+cd /opt/rfq && git reset --hard <old-sha> && cd deploy && docker compose -f docker-compose.yml -f docker-compose.$PROXY.yml up -d --build   # rollback
+```

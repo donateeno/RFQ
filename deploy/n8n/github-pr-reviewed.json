@@ -1,0 +1,78 @@
+{
+  "name": "GitHub – PR reviewed by Claude",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rfq-pr-reviewed",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "574e69a8-883b-50d7-a531-0586e38f958d",
+      "name": "PR webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "GitHub → n8n token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "akrawat@eve.co.th",
+        "subject": "=[RFQ] PR ready for your decision: {{ $json.body.title }}",
+        "emailType": "html",
+        "message": "=<p>Claude finished reviewing <b>{{ $json.body.title }}</b> by {{ $json.body.author }} (job: {{ $json.body.result }}).</p><p><a href=\"{{ $json.body.url }}\">Open the PR</a> → read the review → Merge to deploy, or request changes.</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "fb7fea70-54c2-5b34-9e1b-44b1b3dd97b4",
+      "name": "Email owner",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        260,
+        0
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "PR webhook": {
+      "main": [
+        [
+          {
+            "node": "Email owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [],
+  "active": false,
+  "staticData": null,
+  "versionId": "25562580-d286-4747-9583-5082fe6256db",
+  "_comment": "Called by the last step of .github/workflows/claude-review.yml (secrets N8N_PR_WEBHOOK_URL / N8N_PR_WEBHOOK_TOKEN). Swap Gmail for LINE/Telegram if preferred."
+}

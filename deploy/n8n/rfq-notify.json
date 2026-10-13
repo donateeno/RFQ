@@ -1,0 +1,78 @@
+{
+  "name": "RFQ – send notifications",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rfq-notify",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "cec32d13-9e0f-5931-90a6-53131ddd691e",
+      "name": "RFQ webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "RFQ integration token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.body.to.join(',') }}",
+        "subject": "={{ $json.body.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.body.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "b746ae56-0938-59c1-92ec-01dd2dc9a2ca",
+      "name": "Send email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        260,
+        0
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "RFQ webhook": {
+      "main": [
+        [
+          {
+            "node": "Send email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [],
+  "active": false,
+  "staticData": null,
+  "versionId": "6c7bc0cd-5248-4aa0-bae7-effde44815bd",
+  "_comment": "App POSTs {event,to[],subject,html}. Credential 'RFQ integration token' = Header Auth, name Authorization, value 'Bearer <INTEGRATION_TOKEN>'. Production URL → NOTIFY_WEBHOOK_URL."
+}

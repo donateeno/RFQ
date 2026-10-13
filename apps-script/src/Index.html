@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RFQ Price Approval</title>
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-row">
+        <div class="brand"><span class="logo">RFQ</span><span>ขออนุมัติราคาพิเศษ</span></div>
+        <div class="who" id="who"></div>
+      </div>
+      <nav class="tabs" id="tabs"></nav>
+    </div>
+  </header>
+  <main id="view"><div class="loading"><span class="spin"></span> กำลังโหลด…</div></main>
+  <div class="actionbar" id="actionbar"></div>
+  <datalist id="dl-EVE"></datalist>
+  <datalist id="dl-FOSTER"></datalist>
+  <datalist id="dl-customers"></datalist>
+  <?!= include('App'); ?>
+</body>
+</html>

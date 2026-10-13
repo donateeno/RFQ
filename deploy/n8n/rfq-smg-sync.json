@@ -1,0 +1,357 @@
+{
+  "name": "RFQ – sync SMG catalogue (cost, Nationwide pricelist, SMG MASTER)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 6,
+              "triggerAtMinute": 15
+            }
+          ]
+        }
+      },
+      "id": "6236c1a2-eb27-59cf-a1e2-e5c6d2d6d467",
+      "name": "Daily 06:15",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rfq-smg-sync",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "e1a8b660-a1dc-5e51-bba6-7806cf0a1586",
+      "name": "Sync now (from the app)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "webhookId": "229284a4-501f-5fb9-9a51-5526c61c6a72",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "RFQ integration token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/drive/v3/files?q=name%20contains%20%27SMG%20MASTER%27%20and%20mimeType%3D%27application%2Fvnd.google-apps.spreadsheet%27%20and%20trashed%3Dfalse&orderBy=createdTime%20desc&pageSize=1&fields=files(id%2Cname)",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "options": {}
+      },
+      "id": "6baaedc3-f4f9-5a23-8d1b-d354d58eb132",
+      "name": "Find newest SMG MASTER",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        100
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_COST_FILE_ID_HERE/values/%272021%27!A3%3AAQ?valueRenderOption=FORMATTED_VALUE",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "0eb7b7a4-d5c7-50a8-ace1-49b78c0fb60e",
+      "name": "Read cost 2021",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        100
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_NATIONWIDE_FILE_ID_HERE/values/%27Pricelist%20update%27!A2%3AI?valueRenderOption=FORMATTED_VALUE",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "a85d87fd-7162-513b-93c2-40b113cce348",
+      "name": "Read Nationwide pricelist",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        100
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Find newest SMG MASTER').item.json.files[0].id }}/values:batchGet?ranges=MASTER!A1%3AR&ranges=HOTPRICE!A1%3AG&valueRenderOption=FORMATTED_VALUE",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "4c235417-fd1f-57c2-9ce0-f676ea9e9521",
+      "name": "Read MASTER + HOTPRICE",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        100
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Period name from the MASTER file title, e.g. \"SMG MASTER OCT26-JAN27\" → OCT26-JAN27.\n// The period must already exist in the app (ตั้งค่า → รอบราคา → สร้างรอบราคา) or the import is refused (409).\nconst file = $('Find newest SMG MASTER').first().json.files[0];\nif (!file) throw new Error('No spreadsheet named \"SMG MASTER …\" found');\nconst priceList = file.name.replace(/^SMG MASTER\\s*/i, '').trim();\nconst master = $('Read MASTER + HOTPRICE').first().json.valueRanges;\nreturn [{ json: { priceList, body: { sheets: {\n  cost: $('Read cost 2021').first().json.values,\n  pricelist: $('Read Nationwide pricelist').first().json.values,\n  master: master[0].values,\n  hot: master[1].values\n} } } }];"
+      },
+      "id": "c7a12680-6a8e-5611-af52-52b12bead934",
+      "name": "Combine sheets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://rfq.example.com/api/integrations/import/smg_catalog?priceList={{ encodeURIComponent($json.priceList) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "47ca06cd-5279-540a-975d-999aa9dabfbd",
+      "name": "Import into RFQ",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "RFQ integration token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_MAPPING_FILE_ID_HERE/values:batchGet?ranges=%27Term%20Library%27%21A1%3AK&ranges=%27Customer%20Groups%27%21A1%3AH&ranges=%27Group%20Terms%27%21A1%3AK&ranges=%27Channel%20Map%27%21A1%3AB&ranges=%27Customer%20Map%27%21A1%3AD&ranges=%27Active%20Customers%27%21A6%3AH&valueRenderOption=FORMATTED_VALUE",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "f0d38c18-b49e-5703-b0f1-8e606b0515f2",
+      "name": "Read Customer Price Mapping",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        360
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tabs of the Customer Price Mapping Template, in the order requested above.\nconst v = $json.valueRanges.map((r) => r.values || []);\nreturn [{ json: { sheets: { terms: v[0], groups: v[1], groupTerms: v[2], channels: v[3], customerMap: v[4], customers: v[5] } } }];"
+      },
+      "id": "9a8732e1-5292-5e36-91fd-474f9a0645c5",
+      "name": "Combine mapping tabs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://rfq.example.com/api/integrations/import/customer_pricing",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ sheets: $json.sheets }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "c87670c6-6567-58f4-8bde-cbcd09c1c2c9",
+      "name": "Import customer pricing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        360
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "RFQ integration token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 06:15": {
+      "main": [
+        [
+          {
+            "node": "Find newest SMG MASTER",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Customer Price Mapping",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync now (from the app)": {
+      "main": [
+        [
+          {
+            "node": "Find newest SMG MASTER",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Customer Price Mapping",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find newest SMG MASTER": {
+      "main": [
+        [
+          {
+            "node": "Read cost 2021",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read cost 2021": {
+      "main": [
+        [
+          {
+            "node": "Read Nationwide pricelist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Nationwide pricelist": {
+      "main": [
+        [
+          {
+            "node": "Read MASTER + HOTPRICE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read MASTER + HOTPRICE": {
+      "main": [
+        [
+          {
+            "node": "Combine sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine sheets": {
+      "main": [
+        [
+          {
+            "node": "Import into RFQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Customer Price Mapping": {
+      "main": [
+        [
+          {
+            "node": "Combine mapping tabs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine mapping tabs": {
+      "main": [
+        [
+          {
+            "node": "Import customer pricing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "_comment": "Daily 06:15 and on the app's 'ซิงค์ราคาตอนนี้' button (SYNC_WEBHOOK_URL = this webhook's production URL; header auth = the RFQ integration token). Reads COST UPDATE 2021 for import '2021'!A3:AQ, SMG PRICELIST NATIONWIDE 'Pricelist update'!A2:I and the newest 'SMG MASTER <period>' file (MASTER!A1:R, HOTPRICE!A1:G), then posts them to /api/integrations/import/smg_catalog?priceList=<period>. The app checks every header row, refuses an unknown period (create it first in ตั้งค่า → รอบราคา) and replaces that period's EVE/Evercook/Excel products in one transaction. Replace PUT_*_FILE_ID_HERE, rfq.example.com and the credentials. Second branch: reads the Customer Price Mapping Template (Term Library, Customer Groups, Group Terms, Channel Map, Customer Map, Active Customers from row 6) and posts it to /api/integrations/import/customer_pricing, which replaces the customer price lookup data. Replace PUT_MAPPING_FILE_ID_HERE."
+}
