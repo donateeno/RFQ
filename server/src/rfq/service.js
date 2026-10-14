@@ -731,7 +731,10 @@ async function catalogSyncStatus(db) {
     at: r.at.toISOString(), ok: r.action === 'IMPORT', error: d.error || '', priceList: d.priceList || '', imported: d.imported || 0,
     withCost: d.withCost || 0, withoutCost: d.withoutCost || 0, notForSale: d.notForSale || 0, blankSaleStatus: d.blankSaleStatus || 0,
     statuses: d.statuses || {}, masterMismatchCount: d.masterMismatchCount || 0, masterMismatches: d.masterMismatches || [],
-    duplicateBarcodes: d.duplicateBarcodes || [], badBarcodes: d.badBarcodes || 0
+    duplicateBarcodes: d.duplicateBarcodes || [], badBarcodes: d.badBarcodes || 0,
+    sets: d.setRows !== undefined, setRows: d.setRows || 0, setCostUsed: d.setCostUsed || 0, setNoBarcode: d.setNoBarcode || 0,
+    setNoTotal: d.setNoTotal || [], setZeroPart: d.setZeroPart || [], setSumMismatch: d.setSumMismatch || [], setConflict: d.setConflict || [],
+    setNotInCatalogue: d.setNotInCatalogue || 0
   };
 }
 

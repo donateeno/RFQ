@@ -1218,13 +1218,25 @@
         '<dt>ข้ามต้นทุน (ST = N)</dt><dd>' + x.notForSale + (x.blankSaleStatus ? ' · ST ว่าง ' + x.blankSaleStatus + ' (นำเข้า)' : '') + '</dd></dl>' +
         (x.masterMismatchCount ? '<div class="banner" style="margin:8px 0 0">ราคาที่ระบบคำนวณไม่ตรงกับคอลัมน์ H/I/R ของ SMG MASTER ' + x.masterMismatchCount + ' รายการ: ' + x.masterMismatches.slice(0, 15).map(esc).join(', ') + (x.masterMismatchCount > 15 ? ' …' : '') + '</div>' : '') +
         (x.duplicateBarcodes.length ? '<div class="banner" style="margin:8px 0 0">บาร์โค้ดซ้ำในชีต (ใช้แถวแรก): ' + x.duplicateBarcodes.slice(0, 15).map(esc).join(', ') + '</div>' : '') +
-        (x.badBarcodes ? '<p class="hint">บาร์โค้ดไม่ถูกต้อง (ข้าม) ' + x.badBarcodes + ' แถว</p>' : '');
+        (x.badBarcodes ? '<p class="hint">บาร์โค้ดไม่ถูกต้อง (ข้าม) ' + x.badBarcodes + ' แถว</p>' : '') + setReport(x);
     }
     return '<div class="card stack-gap"><div class="row" style="justify-content:space-between"><h2 style="margin:0">ซิงค์ราคา SMG จาก Google Sheets</h2><div class="row">' +
       '<button class="btn small ghost" id="sync-refresh">รีเฟรช</button>' +
       (configured ? '<button class="btn small primary" id="sync-go">ซิงค์ราคาตอนนี้</button>' : '') + '</div></div>' +
-      '<p class="hint">ต้นทุน: COST UPDATE 2021 (คอลัมน์ P, ไม่รวม ST = N) · ราคาฐาน: SMG PRICELIST NATIONWIDE · Hot price: SMG MASTER (GT / DGT ออนไลน์ / BT) · ราคาตามลูกค้า: Customer Price Mapping — n8n ซิงค์ทุกวัน' +
+      '<p class="hint">ต้นทุน: COST UPDATE 2021 (คอลัมน์ P, ไม่รวม ST = N; ชุดเซ็ตจากแท็บ relationship คอลัมน์ K) · ราคาฐาน: SMG PRICELIST NATIONWIDE · Hot price: SMG MASTER (GT / DGT ออนไลน์ / BT) · ราคาตามลูกค้า: Customer Price Mapping — n8n ซิงค์ทุกวัน' +
       (configured ? '' : ' · ยังไม่ได้ตั้งค่า SYNC_WEBHOOK_URL ที่เซิร์ฟเวอร์') + '</p>' + body + '</div>';
+  }
+
+  /** Set costs from the cost file's 'relationship' tab: how many were used and which barcodes were left without cost. */
+  function setReport(x) {
+    if (!x.sets) return '<p class="hint">ต้นทุนชุดเซ็ต: ยังไม่ได้อ่านแท็บ relationship (ตั้งค่าใน n8n)</p>';
+    var list = function (label, eans) {
+      return eans.length ? '<dt>' + label + '</dt><dd>' + (eans.length >= 50 ? '50 ขึ้นไป' : eans.length) + ' · ' + eans.slice(0, 10).map(esc).join(', ') + (eans.length > 10 ? ' …' : '') + '</dd>' : '';
+    };
+    var skipped = list('ชิ้นส่วนไม่มีต้นทุน (0 หรือหาไม่พบ)', x.setZeroPart) + list('K ไม่ใช่ตัวเลข', x.setNoTotal) + list('K ≠ ผลรวมชิ้นส่วน', x.setSumMismatch) + list('บาร์โค้ดซ้ำ ต้นทุนต่างกัน', x.setConflict);
+    return '<h3 style="margin:12px 0 4px">ต้นทุนชุดเซ็ต (แท็บ relationship)</h3><dl class="kv"><dt>ใช้ได้</dt><dd>' + x.setCostUsed + ' เซ็ต จาก ' + x.setRows + ' แถว' +
+      (x.setNoBarcode ? ' · ไม่มีบาร์โค้ด ' + x.setNoBarcode + ' แถว' : '') + (x.setNotInCatalogue ? ' · ไม่อยู่ในรอบราคานี้ ' + x.setNotInCatalogue : '') + '</dd>' + skipped + '</dl>' +
+      (skipped ? '<p class="hint">เซ็ตที่ข้ามจะแสดงว่า "ไม่มีต้นทุน" จนกว่าจะแก้ในชีต ดูรายการทั้งหมดที่แท็บ "ตรวจสอบเซ็ต" ของไฟล์ COST UPDATE 2021 for import</p>' : '');
   }
 
   /** Customer Price Mapping sheet (ราคาตามลูกค้า): last import and what is loaded. Synced with the same button. */

@@ -165,6 +165,73 @@ test('a moved column stops the sync and changes nothing; a later sync replaces t
   assert.ok(!JSON.stringify(after.catalogSync).includes('5000'), 'no cost in the sync status');
 });
 
+// COST UPDATE 2021 for import, 'relationship'!A2:AA — A EAN13, C/E/G/I parts, D/F/H/J part costs, K total, AA EAN13
+const setHead = row(27, { 0: 'EAN13', 1: 'Description', 2: 'Subset1 Description', 3: 'Cost subset1', 4: 'Subset2 Description', 5: 'Cost subset2',
+  6: 'Subset1 Description', 7: 'Cost subset3', 8: 'Subset4 Description', 9: 'Cost subset4', 10: 'Total Set Cost', 26: 'EAN13' });
+const setRow = (ean, parts, total, ean2) => {
+  const r = row(27, { 0: ean || '', 10: total, 26: ean2 || '' });
+  [0, 1, 2, 3].forEach((i) => { r[2 + i * 2] = parts[i] ? parts[i][0] : ''; r[3 + i * 2] = parts[i] ? parts[i][1] : '0'; });
+  return r;
+};
+const SET = { ok: '2000000000086', viaAA: '2000000000093', zero: '2000000000109', na: '2000000000116', sum: '2000000000123',
+  conflict: '2000000000130', twice: '2000000000147', notSold: '2000000000154', blank: '2000000000161' };
+
+test('set costs come from the relationship tab only when every part has a cost and the total adds up', async () => {
+  const s = sheets();
+  for (const [k, ean] of Object.entries(SET)) if (k !== 'notSold') s.master.push(master(ean, 'EVE', 'SET ' + k.toUpperCase(), '4,990.00', '4,990.00', '', ''));
+  s.sets = [setHead,
+    setRow(SET.ok, [['HOB-ALPHA', '1,000.00'], ['HOOD-DELTA', '5,000.00']], '6,000.00'),
+    setRow('', [['HOB-ALPHA', '1,000.00'], ['PAN-EVERCOOK', '300.00']], '1,300.00', SET.viaAA),
+    setRow(SET.zero, [['HOB-ALPHA', '1,000.00'], ['HOOD-DELTA', '5,000.00'], ['NEW-SINK', '0']], '6,000.00'),   // part not found → 0
+    setRow(SET.blank, [['HOB-ALPHA', '1,000.00'], ['HOOD-DELTA', '']], '1,000.00'),                          // part named, cost blank
+    setRow(EAN.B, [['HOB-ALPHA', '1,000.00'], ['PAN-EVERCOOK', '300.00']], '1,300.00'),                     // ST = N in '2021'
+    setRow(SET.na, [['HOB-NEW', '#N/A'], ['HOOD-DELTA', '5,000.00']], '#N/A'),
+    setRow(SET.sum, [['HOB-ALPHA', '1,000.00'], ['HOOD-DELTA', '5,000.00']], '5,500.00'),
+    setRow(SET.conflict, [['HOB-ALPHA', '1,000.00'], ['HOOD-DELTA', '5,000.00']], '6,000.00'),
+    setRow(SET.conflict, [['HOB-ALPHA', '1,000.00'], ['PAN-EVERCOOK', '300.00']], '1,300.00'),
+    setRow(SET.twice, [['HOB-ALPHA', '1,000.00'], ['PAN-EVERCOOK', '300.00']], '1,300.00'),
+    setRow(SET.twice, [['HOB-ALPHA', '1,000.00'], ['PAN-EVERCOOK', '300.00']], '1,300.00'),
+    setRow(SET.notSold, [['HOB-ALPHA', '1,000.00'], ['PAN-EVERCOOK', '300.00']], '1,300.00'),
+    setRow(EAN.A, [['HOB-ALPHA', '1,000.00'], ['PAN-EVERCOOK', '300.00']], '1,300.00'),                     // has its own unit cost
+    setRow('', [['SMART II', '4,000.00'], ['ARC 90', '500.07']], '4,500.07'),                                  // no barcode
+    setRow('', [], '#N/A')];                                                                                    // empty template row
+  const r = await sync(s);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const d = r.body.data;
+  assert.equal(d.setRows, 14);
+  assert.equal(d.setNoBarcode, 1);
+  assert.equal(d.setCostUsed, 3, 'ok, via AA, identical duplicate rows');
+  assert.deepEqual(d.setZeroPart, [SET.zero, SET.blank]);
+  assert.deepEqual(d.setNoTotal, [SET.na]);
+  assert.deepEqual(d.setSumMismatch, [SET.sum]);
+  assert.deepEqual(d.setConflict, [SET.conflict]);
+  assert.deepEqual(d.setNotInCatalogueList, [SET.notSold]);
+  assert.ok(!/6,?000|1,?300/.test(JSON.stringify(d)), 'no cost in the import result');
+
+  const costOf = async (ean) => (await check(owner, 'GT_EVE', ean, 4000, [0.18, 0, 0])).cost;
+  assert.equal(await costOf(SET.ok), 6000);
+  assert.equal(await costOf(SET.viaAA), 1300);
+  assert.equal(await costOf(SET.twice), 1300);
+  for (const k of ['zero', 'blank', 'na', 'sum', 'conflict']) assert.equal(await costOf(SET[k]), null, k + ': no cost rather than a wrong one');
+  assert.equal(await costOf(EAN.B), null, 'ST = N in the 2021 tab: no cost, not even a set cost');
+  assert.equal(await costOf(EAN.A), 1000, 'a unit cost from the 2021 tab wins');
+  const seen = await check(sales, 'GT_EVE', SET.ok, 4000, [0.18, 0, 0]);
+  assert.ok(!('cost' in seen) && !('mu' in seen), 'sales still see the indicator only');
+
+  const info = await owner.call('getAdminInfo');
+  assert.equal(info.catalogSync.setCostUsed, 3);
+  assert.deepEqual(info.catalogSync.setZeroPart, [SET.zero, SET.blank]);
+  assert.ok(!/6,?000|1,?300/.test(JSON.stringify(info)), 'no set cost in the sync status or the audit log');
+
+  const fixedTypo = sheets();
+  fixedTypo.master.push(master(SET.ok, 'EVE', 'SET OK', '4,990.00', '4,990.00', '', ''));
+  fixedTypo.sets = [setHead.map((h, i) => (i === 6 ? 'Subset3 Description' : h)), setRow(SET.ok, [['HOB-ALPHA', '1,000.00'], ['HOOD-DELTA', '5,000.00']], '6,000.00')];
+  assert.equal((await sync(fixedTypo)).status, 200, 'G may be renamed to "Subset3 Description"');
+  assert.equal(await costOf(SET.ok), 6000);
+  assert.equal((await sync(Object.assign(sheets(), { sets: [] }))).status, 200, 'an empty relationship tab does not stop the sync');
+  assert.equal((await sync(sheets())).status, 200, 'the sets range is optional');
+});
+
 test('sync now: admin only, needs SYNC_WEBHOOK_URL', async () => {
   await assert.rejects(sup.call('requestCatalogSync'), /ไม่มีสิทธิ์/);
   await assert.rejects(owner.call('requestCatalogSync'), /SYNC_WEBHOOK_URL/);

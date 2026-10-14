@@ -1,5 +1,7 @@
 {
   "name": "RFQ – sync SMG catalogue (cost, Nationwide pricelist, SMG MASTER)",
+  "id": "rfqSmgSync000001",
+  "active": false,
   "nodes": [
     {
       "parameters": {
@@ -48,7 +50,7 @@
     },
     {
       "parameters": {
-        "url": "https://www.googleapis.com/drive/v3/files?q=name%20contains%20%27SMG%20MASTER%27%20and%20mimeType%3D%27application%2Fvnd.google-apps.spreadsheet%27%20and%20trashed%3Dfalse&orderBy=createdTime%20desc&pageSize=1&fields=files(id%2Cname)",
+        "url": "https://www.googleapis.com/drive/v3/files?q=name%20contains%20%27SMG%20MASTER%27%20and%20mimeType%3D%27application%2Fvnd.google-apps.spreadsheet%27%20and%20trashed%3Dfalse&orderBy=createdTime%20desc&pageSize=10&fields=files(id%2Cname)",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "googleDriveOAuth2Api",
         "options": {}
@@ -70,7 +72,7 @@
     },
     {
       "parameters": {
-        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_COST_FILE_ID_HERE/values/%272021%27!A3%3AAQ?valueRenderOption=FORMATTED_VALUE",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_COST_FILE_ID_HERE/values:batchGet?ranges=%272021%27!A3%3AAQ&ranges=relationship!A2%3AAA&valueRenderOption=FORMATTED_VALUE",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "googleSheetsOAuth2Api",
         "options": {}
@@ -114,7 +116,7 @@
     },
     {
       "parameters": {
-        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Find newest SMG MASTER').item.json.files[0].id }}/values:batchGet?ranges=MASTER!A1%3AR&ranges=HOTPRICE!A1%3AG&valueRenderOption=FORMATTED_VALUE",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Find newest SMG MASTER').item.json.files.find((f) => /^SMG MASTER\\s+\\S/i.test(f.name)).id }}/values:batchGet?ranges=MASTER!A1%3AR&ranges=HOTPRICE!A1%3AG&valueRenderOption=FORMATTED_VALUE",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "googleSheetsOAuth2Api",
         "options": {}
@@ -136,7 +138,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Period name from the MASTER file title, e.g. \"SMG MASTER OCT26-JAN27\" → OCT26-JAN27.\n// The period must already exist in the app (ตั้งค่า → รอบราคา → สร้างรอบราคา) or the import is refused (409).\nconst file = $('Find newest SMG MASTER').first().json.files[0];\nif (!file) throw new Error('No spreadsheet named \"SMG MASTER …\" found');\nconst priceList = file.name.replace(/^SMG MASTER\\s*/i, '').trim();\nconst master = $('Read MASTER + HOTPRICE').first().json.valueRanges;\nreturn [{ json: { priceList, body: { sheets: {\n  cost: $('Read cost 2021').first().json.values,\n  pricelist: $('Read Nationwide pricelist').first().json.values,\n  master: master[0].values,\n  hot: master[1].values\n} } } }];"
+        "jsCode": "// Period name from the MASTER file title, e.g. \"SMG MASTER OCT26-JAN27\" → OCT26-JAN27.\n// The period must already exist in the app (ตั้งค่า → รอบราคา → สร้างรอบราคา) or the import is refused (409).\n// Newest file whose title starts with \"SMG MASTER \" (skips \"Copy of SMG MASTER …\").\nconst file = ($('Find newest SMG MASTER').first().json.files || []).find((f) => /^SMG MASTER\\s+\\S/i.test(f.name));\nif (!file) throw new Error('No spreadsheet named \"SMG MASTER <period>\" found');\nconst priceList = file.name.replace(/^SMG MASTER\\s*/i, '').trim();\nconst cost = $('Read cost 2021').first().json.valueRanges;   // '2021'!A3:AQ, relationship!A2:AA (set costs)\nconst master = $('Read MASTER + HOTPRICE').first().json.valueRanges;\nreturn [{ json: { priceList, body: { sheets: {\n  cost: cost[0].values,\n  sets: cost[1].values,   // undefined (left out) when the tab is empty\n  pricelist: $('Read Nationwide pricelist').first().json.values,\n  master: master[0].values,\n  hot: master[1].values\n} } } }];"
       },
       "id": "c7a12680-6a8e-5611-af52-52b12bead934",
       "name": "Combine sheets",
@@ -353,5 +355,5 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "_comment": "Daily 06:15 and on the app's 'ซิงค์ราคาตอนนี้' button (SYNC_WEBHOOK_URL = this webhook's production URL; header auth = the RFQ integration token). Reads COST UPDATE 2021 for import '2021'!A3:AQ, SMG PRICELIST NATIONWIDE 'Pricelist update'!A2:I and the newest 'SMG MASTER <period>' file (MASTER!A1:R, HOTPRICE!A1:G), then posts them to /api/integrations/import/smg_catalog?priceList=<period>. The app checks every header row, refuses an unknown period (create it first in ตั้งค่า → รอบราคา) and replaces that period's EVE/Evercook/Excel products in one transaction. Replace PUT_*_FILE_ID_HERE, rfq.example.com and the credentials. Second branch: reads the Customer Price Mapping Template (Term Library, Customer Groups, Group Terms, Channel Map, Customer Map, Active Customers from row 6) and posts it to /api/integrations/import/customer_pricing, which replaces the customer price lookup data. Replace PUT_MAPPING_FILE_ID_HERE."
+  "_comment": "Daily 06:15 and on the app's 'ซิงค์ราคาตอนนี้' button (SYNC_WEBHOOK_URL = this webhook's production URL; header auth = the RFQ integration token). Reads COST UPDATE 2021 for import '2021'!A3:AQ and 'relationship'!A2:AA (set costs, column K), SMG PRICELIST NATIONWIDE 'Pricelist update'!A2:I and the newest 'SMG MASTER <period>' file (MASTER!A1:R, HOTPRICE!A1:G), then posts them to /api/integrations/import/smg_catalog?priceList=<period>. The app checks every header row, refuses an unknown period (create it first in ตั้งค่า → รอบราคา) and replaces that period's EVE/Evercook/Excel products in one transaction. Replace PUT_*_FILE_ID_HERE, rfq.example.com and the credentials. Second branch: reads the Customer Price Mapping Template (Term Library, Customer Groups, Group Terms, Channel Map, Customer Map, Active Customers from row 6) and posts it to /api/integrations/import/customer_pricing, which replaces the customer price lookup data. Replace PUT_MAPPING_FILE_ID_HERE."
 }
