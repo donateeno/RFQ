@@ -838,6 +838,7 @@ async function importCsv(ctx, payload) {
   const values = parseCsv(String(payload.csv || ''));
   const res = await importData(ctx.db, {
     type: payload.type, values, brand: payload.brand, group: payload.group, today: todayIso(ctx.cfg.timezone), user: user.email,
+    fileName: payload.fileName, keyColumns: payload.keyColumns,
     priceList: payload.priceList ? { name: payload.priceList.name, effectiveFrom: payload.priceList.effectiveFrom } : null
   });
   await log(ctx.db, user.email, 'IMPORT', [], { type: payload.type, file: payload.fileName, ...res, errors: (res.errors || []).slice(0, 20) });

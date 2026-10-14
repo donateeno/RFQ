@@ -15,7 +15,7 @@ supervisors approve and monitor margin (%MU). Thai UI, Thai business terms.
   - `migrations/*.sql` — append-only. `public/` — static browser app (no build step, ES5-style, no framework).
   - `test/` — `node:test` against a real PostgreSQL (`TEST_DATABASE_URL`).
 - `apps-script/` — interim Google Apps Script version. Frozen: bug fixes only.
-- `deploy/` — docker compose, proxy, backup, n8n workflows. `.github/workflows/` — CI, Claude review, deploy.
+- `deploy/` — docker compose, proxy, backup, n8n workflows, `sap-b1/` (PowerShell on the SAP Windows server: Stock/Sales CSV → `sap_stock`/`sap_sales` via `/api/integrations/import/sap_*` and → Google Sheets). `.github/workflows/` — CI, Claude review, deploy.
 
 ## Commands
 ```bash

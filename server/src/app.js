@@ -8,7 +8,7 @@ const rateLimit = require('express-rate-limit');
 const { OAuth2Client } = require('google-auth-library');
 const { UserError } = require('./pricing');
 const service = require('./rfq/service');
-const { importData } = require('./rfq/importers');
+const { importData, parseCsv } = require('./rfq/importers');
 const { createNotifier } = require('./rfq/notifications');
 
 const PUBLIC = path.join(__dirname, '..', 'public');
@@ -142,10 +142,14 @@ function createApp(deps) {
     if (!cfg.integrationToken || auth !== 'Bearer ' + cfg.integrationToken) return res.status(401).json({ ok: false, error: 'unauthorized' });
     next();
   });
-  integration.post('/import/:type', async (req, res) => {
+  // A raw CSV body (Content-Type: text/csv) is accepted as well as {values} — the SAP Windows server
+  // uploads its report files this way (deploy/sap-b1/Upload-SapToRfq.ps1).
+  integration.post('/import/:type', express.text({ type: 'text/csv', limit: '60mb' }), async (req, res) => {
     try {
+      const csv = typeof req.body === 'string';
       const out = await importData(db, {
-        type: req.params.type, values: req.body && req.body.values, sheets: req.body && req.body.sheets, brand: req.query.brand, group: req.query.group,
+        type: req.params.type, values: csv ? parseCsv(req.body) : req.body && req.body.values, sheets: csv ? null : req.body && req.body.sheets,
+        brand: req.query.brand, group: req.query.group, fileName: req.query.file, fileDate: req.query.date, keyColumns: req.query.key,
         today: service.todayIso(cfg.timezone), user: 'n8n', newListFutureOnly: true,
         priceList: req.query.priceList ? { name: String(req.query.priceList), effectiveFrom: req.query.effectiveFrom } : null
       });
