@@ -150,6 +150,7 @@ Import each file in **n8n → Workflows → Import from file** (or `n8n import:w
   - A = DisplayinUPC, B = barcode, D = description, M = GP DISC. (the net price)
   - the `TRUE` row is the price a NON PC dealer pays; `FALSE` rows are shown as other options (quantity, conditions)
   - items not in this tab use GP tier T20
+  - the tab must exist: n8n reads it in the same call as `2021`, so renaming or deleting it stops the whole sync (rename the range in n8n too)
 - *SMG PRICELIST NATIONWIDE* → sheet `Pricelist update`:
   - A = status (S, OR, EX, G, MTO)
   - F = normal (display) price, G = promotion (base) price

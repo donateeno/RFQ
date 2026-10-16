@@ -22,12 +22,13 @@ function loadPriceGroups(file) {
   return raw.groups;
 }
 
-/** GP tiers of customer groups (price-groups.json "gpTiers"), validated, as a Map code -> tier. */
-function loadGpTiers(file) {
+/** GP tiers of customer groups (price-groups.json "gpTiers" as a Map code -> tier) and the highest GP rate the import accepts. */
+function loadGpConfig(file) {
   const raw = JSON.parse(fs.readFileSync(file || CONFIG_FILE, 'utf8'));
   validatePriceGroups(raw);
-  return new Map((raw.gpTiers || []).map((t) => [t.code, t]));
+  return { tiers: new Map((raw.gpTiers || []).map((t) => [t.code, t])), rateMax: raw.gpRateMax };
 }
+const loadGpTiers = (file) => loadGpConfig(file).tiers;
 
 /** Fails fast (and in CI) on a malformed price-groups.json. */
 function validatePriceGroups(raw) {
@@ -68,14 +69,19 @@ function validatePriceGroups(raw) {
     });
   });
   const tiers = new Set();
+  if (raw.gpTiers && !(typeof raw.gpRateMax === 'number' && raw.gpRateMax > 0 && raw.gpRateMax < 1)) errors.push('gpRateMax must be a fraction between 0 and 1');
   (raw.gpTiers || []).forEach((t) => {
     if (!t.code || tiers.has(t.code)) errors.push(`gpTiers: code missing or duplicate: ${t.code}`);
     tiers.add(t.code);
     if (t.netPrice !== undefined) {
       if (t.netPrice !== 'WHOLESALE') errors.push(`gpTiers ${t.code}: netPrice must be "WHOLESALE"`);
+      if (!t.fallback) errors.push(`gpTiers ${t.code}: a netPrice tier needs a fallback tier`);
       return;
     }
     if (!(t.steps || []).length) errors.push(`gpTiers ${t.code}: steps required`);
+    if (t.replacesTerms !== undefined && !(Array.isArray(t.replacesTerms) && t.replacesTerms.every((c) => typeof c === 'string' && c && c === c.trim().toUpperCase()))) {
+      errors.push(`gpTiers ${t.code}: replacesTerms must be a list of upper-case term codes`);
+    }
     (t.steps || []).forEach((s) => {
       if (!GP_RATE_KEYS.includes(s.rate)) errors.push(`gpTiers ${t.code}: rate must be one of ${GP_RATE_KEYS}`);
       if (!s.label || typeof s.default !== 'number' || s.default < 0 || s.default >= 1) errors.push(`gpTiers ${t.code}: bad step ${JSON.stringify(s)}`);
@@ -138,4 +144,4 @@ async function seed(pool, cfg, groups) {
   });
 }
 
-module.exports = { seed, loadPriceGroups, loadGpTiers, validatePriceGroups };
+module.exports = { seed, loadPriceGroups, loadGpConfig, loadGpTiers, validatePriceGroups };

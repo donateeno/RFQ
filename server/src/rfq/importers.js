@@ -13,7 +13,7 @@
 const { calculate, UserError, PRICE_TIERS, TERM_METHODS, resolveTierPrice } = require('../pricing');
 const { tx } = require('../db');
 const { getSettings, getCatalog, lookupItem } = require('./catalog');
-const { loadGpTiers } = require('../seed');
+const { loadGpConfig, loadGpTiers } = require('../seed');
 
 // ---------------------------------------------------------------- parsing helpers
 
@@ -423,7 +423,6 @@ const MASTER_GP_BLOCKS = [
   { SCGH: [10, 'ส่วนลด SCGH'], T15: [11, 'ส่วนลดT15'], T18: [12, 'ส่วนลดT18'], T20: [13, 'ส่วนลดT20'], T24: [14, 'ส่วนลดT24'] },
   { BT_GP: [19, 'ส่วนลด BT'], BT_MKT: [20, 'BT MKT FEE'], BT_DC: [21, 'DC FEE'], DST1: [24, 'DST1 GP'] }
 ];
-const GP_RATE_MAX = 0.6;   // same ceiling as the editable channel discounts
 const SMG_MAKES = ['EVE', 'EVERCOOK', 'EXCEL'];
 const colName = (i) => (i >= 26 ? String.fromCharCode(64 + Math.floor(i / 26)) : '') + String.fromCharCode(65 + (i % 26));
 const normHead = (s) => String(s || '').replace(/\s+/g, ' ').trim().toUpperCase();
@@ -536,6 +535,7 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
   const hotRows = smgRows(sheets, 'hot');
   const sets = setCosts(sheets);
   const gpCols = masterGpColumns(sheets);
+  const gpRateMax = loadGpConfig().rateMax;
   const wholesale = wholesalePrices(sheets);
   const report = { costRows: 0, notForSale: 0, blankSaleStatus: 0, duplicateBarcodes: [], badBarcodes: 0,
     gpColumns: Object.keys(gpCols), gpRated: 0, gpBadRates: [] };
@@ -588,7 +588,7 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
         const raw = cell(m._row, i);
         const v = raw.endsWith('%') ? toNum(raw) : toFraction(raw);   // "18%" / "18.00%", or 0.18 / 18 unformatted
         if (v === null) continue;
-        if (v < 0 || v > GP_RATE_MAX) { if (report.gpBadRates.length < 50 && !report.gpBadRates.includes(ean)) report.gpBadRates.push(ean); continue; }
+        if (v < 0 || v > gpRateMax) { if (report.gpBadRates.length < 50 && !report.gpBadRates.includes(ean)) report.gpBadRates.push(ean); continue; }
         (gpRates = gpRates || {})[k] = v;
       }
     }

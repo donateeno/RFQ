@@ -181,6 +181,8 @@ test('price-groups.json validation catches mistakes', () => {
     channels: [{ id: 'X1', formula: 'NOPE', idPrefix: 'X.', discounts: [{ label: 'GP', default: 0.1, min: 0.2 }] }] }] };
   assert.throws(() => validatePriceGroups(bad), (e) => /ascending/.test(e.message) && /formula/.test(e.message) && /brand/.test(e.message) && /default outside/.test(e.message));
   const badTiers = { groups: [], gpTiers: [{ code: 'A', steps: [{ rate: 'T99', label: 'x', default: 0.1 }] }, { code: 'B', steps: [{ rate: 'T15', label: 'x', default: 1.5 }] },
-    { code: 'N', netPrice: 'WHOLESALE', fallback: 'N2' }, { code: 'N2', netPrice: 'WHOLESALE' }, { code: 'A', steps: [] }] };
-  assert.throws(() => validatePriceGroups(badTiers), (e) => /rate must be/.test(e.message) && /bad step/.test(e.message) && /fallback must be/.test(e.message) && /duplicate/.test(e.message));
+    { code: 'N', netPrice: 'WHOLESALE', fallback: 'N2' }, { code: 'N2', netPrice: 'WHOLESALE' }, { code: 'A', steps: [] },
+    { code: 'R', replacesTerms: ['bt_gp'], steps: [{ rate: 'BT_GP', label: 'x', default: 0.2 }] }] };
+  assert.throws(() => validatePriceGroups(badTiers), (e) => /rate must be/.test(e.message) && /bad step/.test(e.message) && /fallback must be/.test(e.message) &&
+    /duplicate/.test(e.message) && /needs a fallback/.test(e.message) && /replacesTerms/.test(e.message) && /gpRateMax/.test(e.message));
 });

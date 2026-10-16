@@ -354,6 +354,10 @@ async function searchCustomers(ctx, q) {
 const TIER_SOURCE = { GT: ['EVE', 'GT'], DGT: ['EVE', 'DGT'], BT: ['EVE', 'BT'], NTW: ['EVE', null], FOSTER: ['FOSTER', null] };
 let gpTierCache = null;
 const gpTierDefs = () => gpTierCache || (gpTierCache = loadGpTiers());
+async function eveProduct(db, date, key) {
+  const cur = ((await priceContext(db, date)).EVE || {}).current;
+  return cur ? productIn(db, cur.id, 'EVE', key) : null;
+}
 
 /**
  * "What does customer X pay for product Y?": customer → group (own override, else its SAP channel's
@@ -406,7 +410,10 @@ async function customerPriceCheck(ctx, payload) {
   // GP tier of the group: per-item GP from SMG MASTER, or (NONPC) the wholesale net price with a fallback tier.
   const tierDef = g.gp_tier ? gpTierDefs().get(g.gp_tier) : null;
   if (g.gp_tier && !tierDef) flags.push(`GP Tier ${g.gp_tier} ไม่มีในระบบ — คิดเฉพาะเงื่อนไขของกลุ่ม`);
-  const wholesale = tierDef && tierDef.netPrice === 'WHOLESALE' && row && row.wholesale && row.wholesale.net > 0 ? row.wholesale : null;
+  // A group whose price tier has no EVE price (blank, JS) still gets the item's GP rates / wholesale price.
+  const lookUpEve = tierDef && !row && !(src && src[0] === 'EVE');
+  const rated = lookUpEve ? await eveProduct(db, date, key) : row;
+  const wholesale = tierDef && tierDef.netPrice === 'WHOLESALE' && rated && rated.wholesale && rated.wholesale.net > 0 ? rated.wholesale : null;
   if (!(gross > 0) && wholesale) {
     gross = wholesale.net;
     grossSource = 'wholesale';
@@ -447,7 +454,7 @@ async function customerPriceCheck(ctx, payload) {
       }
     }
     if (use) {
-      tierTerms = gpTierTerms(use, row && row.gp_rates);
+      tierTerms = gpTierTerms(use, rated && rated.gp_rates);
       const missing = tierTerms.filter((t) => t.defaulted);
       if (missing.length) flags.push(`ไม่มี GP รายสินค้าใน SMG MASTER (${missing.map((t) => t.code).join(', ')}) — ใช้ค่าเริ่มต้นของ Tier`);
     }
