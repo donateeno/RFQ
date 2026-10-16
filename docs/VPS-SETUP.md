@@ -146,17 +146,22 @@ Import each file in **n8n → Workflows → Import from file** (or `n8n import:w
 - *COST UPDATE 2021 for import* → sheet `relationship` (set costs, read with `'2021'` in one call):
   - set barcode in A, or in AA when A is blank; parts in C/E/G/I with their costs in D/F/H/J; K = total set cost
   - K is used only for a set barcode with no cost of its own in `2021`, and only when every named part has a cost above 0, K is a number equal to the parts' sum, and every row with that barcode agrees. Otherwise the set shows "ไม่มีต้นทุน" and is listed in ตั้งค่า. The live list of rows to fix is the `ตรวจสอบเซ็ต` tab of the same file.
+- *COST UPDATE 2021 for import* → sheet `WHOLESALE` (NON PC dealer prices, same call):
+  - A = DisplayinUPC, B = barcode, D = description, M = GP DISC. (the net price)
+  - the `TRUE` row is the price a NON PC dealer pays; `FALSE` rows are shown as other options (quantity, conditions)
+  - items not in this tab use GP tier T20
 - *SMG PRICELIST NATIONWIDE* → sheet `Pricelist update`:
   - A = status (S, OR, EX, G, MTO)
   - F = normal (display) price, G = promotion (base) price
   - I = display-unit price category
-- The newest *SMG MASTER <period>* file → sheets `MASTER` and `HOTPRICE`.
+- The newest *SMG MASTER <period>* file → sheets `MASTER` (A1:Y) and `HOTPRICE`.
+  - per-item GP % used by the customer price lookup: K SCGH, L T15, M T18, N T20, O T24, T BT, U BT MKT FEE, V DC FEE, Y DST1. A blank cell uses the tier default in `price-groups.json` (`gpTiers`) and is flagged.
 
 The selling price per channel works like MASTER columns H (GT), I (DGT) and R (BT): the channel's hot price, otherwise the Nationwide promotion price, otherwise MASTER's old special price. Online channels use DGT. Showroom, Outlet and GT use GT. BT uses BT. Each sync compares the result with MASTER's own H/I/R and lists any differences in ตั้งค่า.
 
 Every new period: create the period first in **ตั้งค่า → รอบราคา → สร้างรอบราคา**, using the name in the MASTER file title (e.g. `OCT26-JAN27`) and its start date. Until it exists, the sync is refused and nothing changes. If a sheet's columns move, the sync stops with the column it expected. Foster and Joseph Space keep their own imports below.
 
-**Customer price lookup (same workflow, second branch).** n8n also reads the *Customer Price Mapping Template* (tabs Term Library, Customer Groups, Group Terms, Channel Map, Customer Map, and Active Customers from row 6) and replaces the data behind **ราคาตามลูกค้า**. Each tab's header row is checked; rows that can't be used (an unknown term code, a wrong method or price tier, a % term without a value) are skipped and listed in ตั้งค่า → ข้อมูลราคาตามลูกค้า.
+**Customer price lookup (same workflow, second branch).** n8n also reads the *Customer Price Mapping Template* (tabs Term Library, Customer Groups A:I, Group Terms, Channel Map, Customer Map, and Active Customers from row 6) and replaces the data behind **ราคาตามลูกค้า**. Customer Groups column I is the group's GP tier (T15, T18, T20, T20_LA, T24, SCGH, DST1, BT or NONPC, defined in `price-groups.json` → `gpTiers`): the item's own GP from SMG MASTER comes first, then the group's terms. Tier BT replaces the group terms BT_GP, BT_MKT and DC_FEE. Each tab's header row is checked; rows that can't be used (an unknown term code, a wrong method or price tier, a % term without a value) are skipped and listed in ตั้งค่า → ข้อมูลราคาตามลูกค้า.
 
 **Other data (one time, as admin → ตั้งค่า → นำเข้าข้อมูล)**
 In each Google Sheet tab, use **File → Download → CSV**, then upload it with the matching type:

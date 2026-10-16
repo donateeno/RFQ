@@ -232,6 +232,57 @@ test('set costs come from the relationship tab only when every part has a cost a
   assert.equal((await sync(sheets())).status, 200, 'the sets range is optional');
 });
 
+// MASTER!A1:Y adds the per-item GP columns K–O and T, U, V, Y; 'WHOLESALE'!A1:M is the NON PC price list
+const gpHead = row(25, Object.assign({}, Object.fromEntries(masterHead.map((h, i) => [i, h])),
+  { 10: 'ส่วนลด SCGH', 11: 'ส่วนลดT15', 12: 'ส่วนลดT18', 13: 'ส่วนลดT20', 14: 'ส่วนลดT24', 19: 'ส่วนลด BT', 20: 'BT MKT FEE', 21: 'DC FEE', 24: 'DST1 GP' }));
+const withGp = (r, rates) => { const o = r.concat(new Array(25 - r.length).fill('')); Object.entries(rates).forEach(([i, v]) => { o[i] = v; }); return o; };
+const whHead = ['DisplayinUPC', 'EAN13', 'MODEL NAME', 'DESCRIPTION', 'UP/DOWN COST', 'COST', 'PROMOTION2', 'WH PRICE', 'ค่าขนส่ง', 'Column1', '%DISC.', 'GP', 'GP DISC.'];
+const wh = (display, ean, desc, net) => [display, ean, 'MODEL', desc, '', '', '', '', '', '', '', '', net];
+
+test('per-item GP rates from SMG MASTER and NON PC wholesale prices are stored with the period (never cost)', async () => {
+  const s = sheets();
+  s.master = s.master.map((r, i) => {
+    if (i === 0) return gpHead;
+    if (r[0] === EAN.A) return withGp(r, { 10: '20%', 11: '15.00%', 12: '18%', 13: '20%', 14: '24%', 19: '15%', 20: '5%', 21: '5.04%', 24: '33%' });
+    if (r[0] === EAN.D) return withGp(r, { 11: '150%', 13: '25%' });   // 150%: typo, skipped and listed
+    return withGp(r, {});
+  });
+  s.wholesale = [whHead,
+    wh('TRUE', EAN.A, 'ราคาส่ง', '501.50'), wh('FALSE', EAN.A, 'ซื้อ 12 ชิ้นขึ้นไป', '480.00'), wh('TRUE', EAN.A, 'ซ้ำ', '1.00'),
+    wh('TRUE', '2000000009999', 'ไม่มีในรอบราคา', '100.00'), wh('TRUE', 'BAD', 'บาร์โค้ดผิด', '100.00'), []];
+  const r = await sync(s);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const d = r.body.data;
+  assert.deepEqual(d.gpColumns, ['SCGH', 'T15', 'T18', 'T20', 'T24', 'BT_GP', 'BT_MKT', 'BT_DC', 'DST1']);
+  assert.equal(d.gpRated, 2);
+  assert.deepEqual(d.gpBadRates, [EAN.D]);
+  assert.equal(d.wholesaleRows, 5);
+  assert.equal(d.wholesaleBadRows, 1);
+  assert.deepEqual(d.wholesaleDuplicates, [EAN.A]);
+  assert.equal(d.wholesaleUsed, 1);
+  assert.deepEqual(d.wholesaleNotInCatalogueList, ['2000000009999']);
+
+  const stored = async (ean) => (await env.db.query(`select gp_rates, wholesale from products p join price_lists l on l.id = p.price_list_id
+    where l.name = 'OCT26-JAN27' and p.barcode = $1`, [ean])).rows[0];
+  const a = await stored(EAN.A);
+  assert.deepEqual(a.gp_rates, { SCGH: 0.2, T15: 0.15, T18: 0.18, T20: 0.2, T24: 0.24, BT_GP: 0.15, BT_MKT: 0.05, BT_DC: 0.0504, DST1: 0.33 });
+  assert.deepEqual(a.wholesale, { net: 501.5, label: 'ราคาส่ง', options: [{ label: 'ซื้อ 12 ชิ้นขึ้นไป', net: 480 }] });
+  assert.deepEqual((await stored(EAN.D)).gp_rates, { T20: 0.25 });
+  assert.equal((await stored(EAN.C)).gp_rates, null);
+
+  const info = (await owner.call('getAdminInfo')).catalogSync;
+  assert.equal(info.gpRated, 2);
+  assert.equal(info.wholesaleUsed, 1);
+  assert.ok(!/1,?000|5,?000/.test(JSON.stringify(info)), 'no cost in the sync status');
+
+  const moved = sheets();
+  moved.master[0] = gpHead.map((h, i) => (i === 12 ? 'ส่วนลด T18 ใหม่' : h));
+  const bad = await sync(moved);
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /คอลัมน์ M ต้องเป็น "ส่วนลดT18"/);
+  assert.deepEqual((await stored(EAN.A)).gp_rates.T18, 0.18, 'unchanged');
+});
+
 test('sync now: admin only, needs SYNC_WEBHOOK_URL', async () => {
   await assert.rejects(sup.call('requestCatalogSync'), /ไม่มีสิทธิ์/);
   await assert.rejects(owner.call('requestCatalogSync'), /SYNC_WEBHOOK_URL/);

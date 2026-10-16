@@ -5,8 +5,8 @@
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { calculate, landedCost, indicatorFor, resolveDiscounts, roundUpTo, resolveTierPrice, PRICE_TIERS, applyTerms } = require('../src/pricing');
-const { loadPriceGroups, validatePriceGroups } = require('../src/seed');
+const { calculate, landedCost, indicatorFor, resolveDiscounts, roundUpTo, resolveTierPrice, PRICE_TIERS, applyTerms, gpTierTerms } = require('../src/pricing');
+const { loadPriceGroups, loadGpTiers, validatePriceGroups } = require('../src/seed');
 
 const groups = loadPriceGroups();
 const G = Object.fromEntries(groups.map((g) => [g.id, g]));
@@ -147,6 +147,30 @@ test('customer price waterfall (Customer Price Mapping, Price Check): BT 20% + M
   assert.equal(applyTerms(1000, 1, []).net, 1000);
 });
 
+test('GP tiers (SMG MASTER K–O, T–V, Y; partner list): HOOD HI-HEE89-90 at GT 29,990 / DGT 34,590', () => {
+  const tiers = loadGpTiers();
+  const net = (code, gross, rates, extra) => applyTerms(gross, 1, gpTierTerms(tiers.get(code), rates).concat(extra || [])).net;
+  const rates = { SCGH: 0.2, T15: 0.15, T18: 0.18, T20: 0.2, T24: 0.24, DST1: 0.33 };
+  assert.equal(net('T15', 29990, rates), 25491.5);
+  assert.equal(net('T18', 29990, rates), 24591.8);
+  assert.equal(net('T20', 29990, rates), 23992);
+  assert.equal(net('T20_LA', 29990, rates), 23992, 'Laos dealers use column N (T20)');
+  assert.equal(net('T24', 29990, rates, [{ method: 'PCT_RUNNING', pct: 0.03 }]), 22108.63, 'Souvanny: 24% then Exw 3%');
+  assert.equal(net('DST1', 34590, rates), 23175.3, 'dropship: DGT less column Y');
+  // F = 99 (MISC25) items carry 25% in every column: the item's own rate wins over the tier default
+  assert.equal(net('T15', 1000, { T15: 0.25 }), 750);
+  // BT compounds GP × MKT fee × DC fee: 9,990 → 7,660.35 inc. VAT = 7,159.21 ex. VAT (partner sheet)
+  const bt = applyTerms(9990, 1, gpTierTerms(tiers.get('BT'), { BT_GP: 0.15, BT_MKT: 0.05, BT_DC: 0.0504 }));
+  assert.deepEqual(bt.steps.map((s) => s.after), [8491.5, 8066.93, 7660.35]);
+  assert.equal(Math.round(bt.net / 1.07 * 100) / 100, 7159.21);
+  // no rate for the item: the tier default (27.83% for BT, as today), flagged
+  const d = gpTierTerms(tiers.get('BT'), null);
+  assert.ok(d.every((t) => t.defaulted));
+  assert.equal(applyTerms(1590, 1, d).net, 1147.5);
+  assert.deepEqual(gpTierTerms(tiers.get('T18'), { T18: 0 }).map((t) => [t.pct, t.defaulted]), [[0, false]], '0% is a rate, not a gap');
+  assert.equal(tiers.get('NONPC').fallback, 'T20');
+});
+
 test('ROUNDUP to thousands matches Excel', () => {
   assert.equal(roundUpTo(742338.05, 3), 743000);
   assert.equal(roundUpTo(743000, 3), 743000);
@@ -156,4 +180,7 @@ test('price-groups.json validation catches mistakes', () => {
   const bad = { groups: [{ id: 'X', costSource: 'PRODUCT', indicatorRules: [{ indicator: 'LOW', upTo: 0.3 }, { indicator: 'VERY LOW', upTo: 0.2 }],
     channels: [{ id: 'X1', formula: 'NOPE', idPrefix: 'X.', discounts: [{ label: 'GP', default: 0.1, min: 0.2 }] }] }] };
   assert.throws(() => validatePriceGroups(bad), (e) => /ascending/.test(e.message) && /formula/.test(e.message) && /brand/.test(e.message) && /default outside/.test(e.message));
+  const badTiers = { groups: [], gpTiers: [{ code: 'A', steps: [{ rate: 'T99', label: 'x', default: 0.1 }] }, { code: 'B', steps: [{ rate: 'T15', label: 'x', default: 1.5 }] },
+    { code: 'N', netPrice: 'WHOLESALE', fallback: 'N2' }, { code: 'N2', netPrice: 'WHOLESALE' }, { code: 'A', steps: [] }] };
+  assert.throws(() => validatePriceGroups(badTiers), (e) => /rate must be/.test(e.message) && /bad step/.test(e.message) && /fallback must be/.test(e.message) && /duplicate/.test(e.message));
 });
