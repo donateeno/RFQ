@@ -586,9 +586,10 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
     if (m) {
       for (const [k, [i]] of Object.entries(gpCols)) {
         const raw = cell(m._row, i);
-        const v = raw.endsWith('%') ? toNum(raw) : toFraction(raw);   // "18%" / "18.00%", or 0.18 / 18 unformatted
-        if (v === null) continue;
-        if (v < 0 || v > gpRateMax) { if (report.gpBadRates.length < 50 && !report.gpBadRates.includes(ean)) report.gpBadRates.push(ean); continue; }
+        if (!raw || raw === '-') continue;
+        // n8n reads formatted values: "18%" / "18.00%". A bare number (0.18? 18?) is ambiguous, so it is listed, not guessed.
+        const v = raw.endsWith('%') ? toNum(raw) : null;
+        if (v === null || v < 0 || v > gpRateMax) { if (report.gpBadRates.length < 50 && !report.gpBadRates.includes(ean)) report.gpBadRates.push(ean); continue; }
         (gpRates = gpRates || {})[k] = v;
       }
     }

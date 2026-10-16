@@ -244,7 +244,8 @@ test('per-item GP rates from SMG MASTER and NON PC wholesale prices are stored w
   s.master = s.master.map((r, i) => {
     if (i === 0) return gpHead;
     if (r[0] === EAN.A) return withGp(r, { 10: '20%', 11: '15.00%', 12: '18%', 13: '20%', 14: '24%', 19: '15%', 20: '5%', 21: '5.04%', 24: '33%' });
-    if (r[0] === EAN.D) return withGp(r, { 11: '150%', 13: '25%' });   // 150%: typo, skipped and listed
+    if (r[0] === EAN.D) return withGp(r, { 11: '150%', 13: '25%', 14: '60%' });   // 150%: typo, skipped and listed; 60% = gpRateMax: kept
+    if (r[0] === EAN.F) return withGp(r, { 11: '0.15', 12: '-' });                 // no % format: ambiguous, listed
     return withGp(r, {});
   });
   s.wholesale = [whHead,
@@ -255,7 +256,7 @@ test('per-item GP rates from SMG MASTER and NON PC wholesale prices are stored w
   const d = r.body.data;
   assert.deepEqual(d.gpColumns, ['SCGH', 'T15', 'T18', 'T20', 'T24', 'BT_GP', 'BT_MKT', 'BT_DC', 'DST1']);
   assert.equal(d.gpRated, 2);
-  assert.deepEqual(d.gpBadRates, [EAN.D]);
+  assert.deepEqual(d.gpBadRates, [EAN.D, EAN.F]);
   assert.equal(d.wholesaleRows, 5);
   assert.equal(d.wholesaleBadRows, 1);
   assert.deepEqual(d.wholesaleDuplicates, [EAN.A]);
@@ -267,7 +268,8 @@ test('per-item GP rates from SMG MASTER and NON PC wholesale prices are stored w
   const a = await stored(EAN.A);
   assert.deepEqual(a.gp_rates, { SCGH: 0.2, T15: 0.15, T18: 0.18, T20: 0.2, T24: 0.24, BT_GP: 0.15, BT_MKT: 0.05, BT_DC: 0.0504, DST1: 0.33 });
   assert.deepEqual(a.wholesale, { net: 501.5, label: 'ราคาส่ง', options: [{ label: 'ซื้อ 12 ชิ้นขึ้นไป', net: 480 }] });
-  assert.deepEqual((await stored(EAN.D)).gp_rates, { T20: 0.25 });
+  assert.deepEqual((await stored(EAN.D)).gp_rates, { T20: 0.25, T24: 0.6 });
+  assert.equal((await stored(EAN.F)).gp_rates, null);
   assert.equal((await stored(EAN.C)).gp_rates, null);
 
   const info = (await owner.call('getAdminInfo')).catalogSync;
@@ -281,6 +283,14 @@ test('per-item GP rates from SMG MASTER and NON PC wholesale prices are stored w
   assert.equal(bad.status, 400);
   assert.match(bad.body.error, /คอลัมน์ M ต้องเป็น "ส่วนลดT18"/);
   assert.deepEqual((await stored(EAN.A)).gp_rates.T18, 0.18, 'unchanged');
+  const movedBt = sheets();
+  movedBt.master[0] = gpHead.map((h, i) => (i === 21 ? 'DC FEE ใหม่' : h));
+  assert.match((await sync(movedBt)).body.error, /คอลัมน์ V ต้องเป็น "DC FEE"/, 'the T–Y block is checked on its own');
+  const onlyKtoO = sheets();
+  onlyKtoO.master = onlyKtoO.master.map((r, i) => (i === 0 ? gpHead.slice(0, 18) : r));
+  const partial = await sync(onlyKtoO);
+  assert.equal(partial.status, 200, 'MASTER!A1:R with K–O only still imports');
+  assert.deepEqual(partial.body.data.gpColumns, ['SCGH', 'T15', 'T18', 'T20', 'T24']);
 });
 
 test('sync now: admin only, needs SYNC_WEBHOOK_URL', async () => {

@@ -151,7 +151,7 @@ test('GP tier per group: per-item GP from SMG MASTER, BT compounding, T24 + Exw,
   s.groups.push(['DEALER_T18', 'ดีลเลอร์ T18', 'GT', '30', '', '', '', '', 'T18'], ['SOUVANNY_T24', 'Souvanny', 'GT', '', '', '', '', '', 't24'],
     ['DEALER_ONLINE', 'ดีลเลอร์ออนไลน์', 'DGT', '', '', '', '', '', 'DST1'], ['DEALER_NOPC', 'ดีลเลอร์ไม่มี PC', 'GT', '', '', '', '', '', 'NONPC'],
     ['BADTIER', 'GP Tier ผิด', 'GT', '', '', '', '', '', 'T99'], ['NOPC_NOTIER', 'Non-PC ไม่มีราคาฐาน', '', '', '', '', '', '', 'NONPC']);
-  s.groupTerms.push(gterm('SOUVANNY_T24', 2, 'EXW', '3.00%'));
+  s.groupTerms.push(gterm('SOUVANNY_T24', 2, 'EXW', '3.00%'), gterm('NOPC_NOTIER', 5, 'CASH_DISC', '2.00%'));
   const r = await sync(s);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.ok(r.body.data.errors.some((e) => /BADTIER GP Tier "T99" ไม่ถูกต้อง/.test(e)), r.body.data.errors.join('|'));
@@ -182,6 +182,7 @@ test('GP tier per group: per-item GP from SMG MASTER, BT compounding, T24 + Exw,
   assert.deepEqual([fallback.net, fallback.gpTier.used, fallback.gpTier.fallback], [23992, 'T20', true], 'not in WHOLESALE: T20');
   assert.ok(fallback.flags.some((f) => /ไม่มีในใบราคา Non-PC/.test(f)));
   const noTier = await price(sales, { groupCode: 'NOPC_NOTIER', productKey: 'HP30-NONPC' });
-  assert.deepEqual([noTier.gross, noTier.grossSource, noTier.net], [501.5, 'wholesale', 501.5], 'no price tier: the wholesale price is still found');
+  assert.deepEqual([noTier.gross, noTier.grossSource, noTier.net], [501.5, 'wholesale', 491.47], 'no price tier: the wholesale price is still found');
+  assert.deepEqual(noTier.steps.map((x) => [x.code, x.after]), [['CASH_DISC', 491.47]], 'group terms apply after the wholesale net, as after any tier');
   for (const x of [t18, bt, nonpc, fallback]) assert.ok(!/cost|"mu"|gain/i.test(JSON.stringify(x)), 'GP % and net prices, never cost');
 });
