@@ -226,6 +226,21 @@ function ConvertTo-ValuesJson {
     return $sb.ToString()
 }
 
+# SAP date-times as Export-Csv writes them ("10/16/2024 12:00:00 AM", or invariant "10/16/2024 00:00:00",
+# always month first) -> "2024-10-16" (or "2024-10-16 13:05:00"). A Thai-locale sheet would otherwise read
+# 10/05/2024 as 10 May; ISO dates are read the same way in every locale.
+$SapDateTime = New-Object regex '^(\d{1,2})/(\d{1,2})/(\d{4}) (\d{1,2}):(\d{2}):(\d{2})(?: ([AP]M))?$', 'IgnoreCase'
+function ConvertTo-IsoDateTime {
+    param([string]$Value)
+    $m = $SapDateTime.Match($Value)
+    if (-not $m.Success) { return $Value }
+    $h = [int]$m.Groups[4].Value
+    if ($m.Groups[7].Success) { $h = ($h % 12) + $(if ($m.Groups[7].Value -ieq 'PM') { 12 } else { 0 }) }
+    $day = '{0}-{1:D2}-{2:D2}' -f $m.Groups[3].Value, [int]$m.Groups[1].Value, [int]$m.Groups[2].Value
+    if ($h -eq 0 -and $m.Groups[5].Value -eq '00' -and $m.Groups[6].Value -eq '00') { return $day }
+    return '{0} {1:D2}:{2}:{3}' -f $day, $h, $m.Groups[5].Value, $m.Groups[6].Value
+}
+
 # Values are written USER_ENTERED so numbers and dates become real numbers in the sheet. Two exceptions
 # get a leading apostrophe (stored as text): the configured TextColumns (item codes, barcodes keep their
 # leading zeros / all 13 digits) and anything starting with = + @ (never run SAP text as a formula).
@@ -233,7 +248,7 @@ function Format-SheetRow {
     param([string[]]$Row, [bool[]]$IsText)
     $out = New-Object string[] $Row.Length
     for ($j = 0; $j -lt $Row.Length; $j++) {
-        $v = [string]$Row[$j]
+        $v = ConvertTo-IsoDateTime ([string]$Row[$j])
         if ($v -and (($j -lt $IsText.Length -and $IsText[$j]) -or $v -match '^[=+@]')) { $v = "'" + $v }
         $out[$j] = $v
     }
@@ -299,12 +314,18 @@ function Update-StockSheet {
 
 # ------------------------------------------------------------ Sales -> Google Sheet (append new lines only)
 
-# The Sales file is month-to-date and re-exported every day, so most of its lines are already in the sheet.
-# Each written row carries a RowKey (last column): the SalesKeyColumns joined with '|', or a hash of the
-# whole row when no key columns are configured. Only rows whose key is not in the sheet yet are appended.
+# NDBS_ReportSales is a rolling window (about two years) re-exported every day, so most of its lines are
+# already in the sheet. Each written row carries a RowKey (last column): the SalesKeyColumns joined with '|',
+# or a hash of the whole row when no key columns are configured. The report has no line number, so a key
+# repeated within one file (same item twice on a document) gets '#2', '#3'... in file order (the RFQ
+# server does the same). Only rows whose key is not in the sheet yet are appended.
 function Get-SalesRowKey {
     param([string[]]$Row, [int[]]$KeyIdx, [Security.Cryptography.SHA1]$Sha)
-    if ($KeyIdx.Length -gt 0) { return (($KeyIdx | ForEach-Object { $Row[$_] }) -join '|') }
+    if ($KeyIdx.Length -gt 0) {
+        $parts = New-Object string[] $KeyIdx.Length
+        for ($k = 0; $k -lt $KeyIdx.Length; $k++) { $parts[$k] = $Row[$KeyIdx[$k]] }
+        return ($parts -join '|')
+    }
     $bytes = $Sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($Row -join [char]31)))
     return 'h:' + (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
 }
@@ -352,11 +373,16 @@ function Add-SalesToSheet {
     $sha = [Security.Cryptography.SHA1]::Create()
     $flags = Get-TextColumnFlags $header $gs.TextColumns
     $new = New-Object 'System.Collections.Generic.List[string[]]'
+    $seen = New-Object 'System.Collections.Generic.Dictionary[string,int]'
     try {
         for ($i = 1; $i -lt $rows.Count; $i++) {
             $key = Get-SalesRowKey $rows[$i] $keyIdx $sha
             if (-not $key.Replace('|', '')) { Write-SyncLog WARN "Sales row $($i + 1): empty key, skipped"; continue }
-            if (-not $known.Add($key)) { continue }   # already in the sheet (or repeated in this file)
+            $n = 1
+            if ($seen.ContainsKey($key)) { $n = $seen[$key] + 1 }
+            $seen[$key] = $n
+            if ($n -gt 1) { $key = $key + '#' + $n }
+            if (-not $known.Add($key)) { continue }   # already in the sheet
             $out = Format-SheetRow ([string[]](@($rows[$i]) + ("'" + $key))) $flags
             $new.Add($out)
         }

@@ -643,6 +643,20 @@ const SAP_MAX_ROWS = 200000;
 const SAP_ITEM_HEADERS = ['itemcode', 'itemno', 'รหัสสินค้า'];
 const normHeader = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9฀-๿]/g, '');
 
+/**
+ * SAP date-times as PowerShell writes them ("10/16/2024 12:00:00 AM", or invariant "10/16/2024 00:00:00",
+ * always month first) → "2024-10-16" (or "2024-10-16 13:05:00" when there is a time of day).
+ */
+function sapDateTime(v) {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{2}):(\d{2})(?: ([AP]M))?$/i.exec(v);
+  if (!m) return v;
+  let h = +m[4];
+  if (m[7]) h = (h % 12) + (/p/i.test(m[7]) ? 12 : 0);
+  const p2 = (n) => String(n).padStart(2, '0');
+  const day = `${m[3]}-${p2(m[1])}-${p2(m[2])}`;
+  return h === 0 && m[5] === '00' && m[6] === '00' ? day : `${day} ${p2(h)}:${m[5]}:${m[6]}`;
+}
+
 /** CSV rows → header (blank / repeated names made unique) and non-blank rows as {itemCode, data}. */
 function sapRows(values) {
   const seen = new Map();
@@ -657,7 +671,7 @@ function sapRows(values) {
   for (const r of values.slice(1)) {
     if (!r.some((v) => String(v || '').trim())) continue;
     const data = {};
-    header.forEach((h, i) => { data[h] = cell(r, i); });
+    header.forEach((h, i) => { data[h] = sapDateTime(cell(r, i)); });
     rows.push({ itemCode: itemCol >= 0 ? cell(r, itemCol) : '', data });
   }
   return { header, rows };
@@ -698,9 +712,11 @@ async function importSapStock(db, values, fileName, today, explicitDate) {
 }
 
 /**
- * Sales report (month-to-date, renewed monthly): rows are upserted by key, so the daily re-upload of the
- * same month only adds new transactions and refreshes changed ones. `keyColumns` names the columns that
- * identify one line (e.g. DocEntry,LineNum); without it the whole row is the key.
+ * Sales report (NDBS_ReportSales: a rolling window, re-exported daily): rows are upserted by key, so each
+ * upload only adds new transactions and refreshes changed ones. `keyColumns` names the columns that identify
+ * one line (e.g. DocType,DocNum,ItemCode); without it the whole row is the key. The report has no line
+ * number, so a key repeated within one file (same item twice on a document) gets "#2", "#3"… in file order
+ * instead of overwriting the earlier line.
  */
 async function importSapSales(db, values, fileName, today, keyColumns, explicitDate) {
   const { header, rows } = sapRows(values);
@@ -711,12 +727,16 @@ async function importSapSales(db, values, fileName, today, keyColumns, explicitD
   if (missing.length) throw new UserError('ไม่พบคอลัมน์คีย์ในไฟล์: ' + missing.join(', '));
   const errors = [];
   const byKey = new Map();
+  const seen = new Map();
+  let repeated = 0;
   rows.forEach((r, i) => {
     const parts = keyCols.length ? keyCols.map((h) => r.data[h]) : header.map((h) => r.data[h]);
     if (keyCols.length && parts.every((p) => !p)) { errors.push(`แถว ${i + 2}: ไม่มีค่าในคอลัมน์คีย์`); return; }
-    const key = keyCols.length ? parts.join('|') : 'h:' + crypto.createHash('sha1').update(JSON.stringify(parts)).digest('hex');
-    if (byKey.has(key) && keyCols.length) errors.push(`แถว ${i + 2}: คีย์ซ้ำ ${key} (ใช้แถวล่าสุด)`);
-    byKey.set(key, r);
+    const base = keyCols.length ? parts.join('|') : 'h:' + crypto.createHash('sha1').update(JSON.stringify(parts)).digest('hex');
+    const n = (seen.get(base) || 0) + 1;
+    seen.set(base, n);
+    if (n > 1) repeated++;
+    byKey.set(n > 1 ? `${base}#${n}` : base, r);
   });
   const list = [...byKey.entries()];
   let inserted = 0;
@@ -735,7 +755,7 @@ async function importSapSales(db, values, fileName, today, keyColumns, explicitD
     await c.query('insert into sap_uploads (kind, file_name, file_date, rows, header) values ($1, $2, $3, $4, $5)',
       ['sales', String(fileName || ''), fileDate, list.length, JSON.stringify(header)]);
   });
-  return { imported: list.length, inserted, updated: changed, unchanged: list.length - inserted - changed, fileDate, keyColumns: keyCols, errors: errors.slice(0, 100), errorCount: errors.length };
+  return { imported: list.length, inserted, updated: changed, unchanged: list.length - inserted - changed, repeatedKeys: repeated, fileDate, keyColumns: keyCols, errors: errors.slice(0, 100), errorCount: errors.length };
 }
 
 // ---------------------------------------------------------------- entry point

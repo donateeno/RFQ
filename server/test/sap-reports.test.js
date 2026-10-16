@@ -58,16 +58,30 @@ test('sales upload appends new lines by key and refreshes changed ones — daily
   assert.equal(r.body.data.inserted, 0);
 });
 
-test('sales key problems are reported; duplicate keys keep the last row', async () => {
+test('sales key problems are reported; a key repeated in one file is numbered, never dropped', async () => {
   let r = await upload('sap_sales', 'Sales_261003.csv', [SALES_HEAD, ['1', '0', '', 'X', '', '1', '1']], { key: 'DocNum,LineNum' });
   assert.equal(r.status, 400);
   assert.match(r.body.error, /DocNum/);
   r = await upload('sap_sales', 'Sales_261003.csv', [SALES_HEAD,
     ['201', '0', '', 'A', '', '1', '1'], ['201', '0', '', 'A', '', '9', '9'], ['', '', '', 'B', '', '1', '1']], { key: 'DocEntry,LineNum' });
   assert.equal(r.status, 200);
-  assert.equal(r.body.data.imported, 1);
-  assert.equal(r.body.data.errorCount, 2);
-  assert.equal((await q(`select data->>'Quantity' as qty from sap_sales where row_key = '201|0'`))[0].qty, '9');
+  assert.deepEqual([r.body.data.imported, r.body.data.repeatedKeys, r.body.data.errorCount], [2, 1, 1]);
+  const rows = await q(`select row_key, data->>'Quantity' as qty from sap_sales where row_key like '201|0%' order by row_key`);
+  assert.deepEqual(rows.map((x) => [x.row_key, x.qty]), [['201|0', '1'], ['201|0#2', '9']]);
+});
+
+test('the real NDBS_ReportSales shape: no line number, US date-times become ISO dates', async () => {
+  const head = ['DocDate', 'DocNum', 'CardCode', 'CardName', 'Channel', 'SalesEmployee', 'Brand', 'ItemCode', 'Dscription', 'Quantity', 'NetAmount', 'DocType'];
+  const line = (date, doc, item, qty, type) => [date, doc, 'C0001', 'ร้านทดสอบ', 'GT', 'พนักงาน ก', 'EVE', item, 'สินค้า', qty, '1000', type];
+  const r = await upload('sap_sales', 'Sales_261016.csv', [head,
+    line('10/16/2024 12:00:00 AM', '5001', 'HC-1', '1', 'Invoice'), line('10/16/2024 12:00:00 AM', '5001', 'HC-1', '2', 'Invoice'),
+    line('10/16/2026 1:30:00 PM', '5001', 'HC-1', '-1', 'Credit Note'), line('10/16/2026 00:00:00', '5002', 'HC-2', '1', 'Invoice')],
+  { key: 'DocType,DocNum,ItemCode', date: '2026-10-16' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([r.body.data.inserted, r.body.data.repeatedKeys], [4, 1]);
+  const rows = await q(`select row_key, data->>'DocDate' as d from sap_sales where row_key like '%|500%' order by row_key`);
+  assert.deepEqual(rows.map((x) => [x.row_key, x.d]), [
+    ['Credit Note|5001|HC-1', '2026-10-16 13:30:00'], ['Invoice|5001|HC-1', '2024-10-16'], ['Invoice|5001|HC-1#2', '2024-10-16'], ['Invoice|5002|HC-2', '2026-10-16']]);
 });
 
 test('uploads need the integration token, a sane file date and some rows; the response carries no row data', async () => {

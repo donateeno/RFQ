@@ -4,7 +4,7 @@
 .DESCRIPTION
   Stock -> the Stock tab is cleared and rewritten with the whole file (header + rows).
   Sales -> only lines not yet in the Sales tab are appended under the last row. The file is
-           month-to-date (renewed every month); a RowKey column at the right end remembers which lines
+           a rolling ~2-year window re-exported daily; a RowKey column at the right end remembers which lines
            are already there, so running it several times a day never duplicates lines.
 .EXAMPLE
   .\Upload-SapToGoogleSheets.ps1 -Report Sales

@@ -14,10 +14,11 @@
     # (then schedule this sync after it).
     ExportScript = 'D:\NTT_Interface\NTT_ShellExportCsv\ExportCSVByQuery_ReportAll.ps1'
 
-    # Columns that identify one sales line in NDBS_ReportSales (check the CSV header!). Used by the RFQ
-    # database and the Google Sheet to add only new lines from the month-to-date file.
+    # Columns that identify one sales line in NDBS_ReportSales. Used by the RFQ database and the Google
+    # Sheet to add only new lines from the daily (rolling ~2-year) file. The report has no line number, so
+    # the same item twice on one document is numbered #2, #3... automatically.
     # @() = the whole row is the key (works, but a changed line is then added again as a new line).
-    SalesKeyColumns = @('DocEntry', 'LineNum')
+    SalesKeyColumns = @('DocType', 'DocNum', 'ItemCode')
 
     Rfq = @{
         Enabled   = $true

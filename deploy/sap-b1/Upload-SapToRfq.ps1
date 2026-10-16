@@ -3,7 +3,7 @@
   Uploads today's Stock_yyMMdd.csv / Sales_yyMMdd.csv to the RFQ database.
 .DESCRIPTION
   Stock -> table sap_stock is replaced by the file.
-  Sales -> table sap_sales: lines are upserted by SalesKeyColumns, so the daily month-to-date file only
+  Sales -> table sap_sales: lines are upserted by SalesKeyColumns, so the daily rolling ~2-year file only
            adds new lines (and refreshes changed ones). Re-running is safe.
 .EXAMPLE
   .\Upload-SapToRfq.ps1                 # both
@@ -24,7 +24,7 @@ foreach ($j in $jobs) {
         Write-SyncLog INFO "RFQ $($j.Type) <- $($file.Name)"
         $r = Send-SapFileToRfq -Config $cfg -File $file -Type $j.Type
         $msg = "RFQ $($j.Type): $($r.imported) rows, file date $($r.fileDate)"
-        if ($j.Type -eq 'sap_sales') { $msg += ", new $($r.inserted), changed $($r.updated), unchanged $($r.unchanged), problems $($r.errorCount)" }
+        if ($j.Type -eq 'sap_sales') { $msg += ", new $($r.inserted), changed $($r.updated), unchanged $($r.unchanged), repeated keys numbered $($r.repeatedKeys), problems $($r.errorCount)" }
         Write-SyncLog SUCCESS $msg
         if ($j.Type -eq 'sap_sales' -and $r.errorCount -gt 0) {
             $first = (@($r.errors) | Select-Object -First 5) -join ' / '
