@@ -295,7 +295,11 @@ test('ตาราง GP: tiers with the spread of item rates, group terms and c
 
   await assert.rejects(sup.call('getGpTable'), /เมนูนี้ถูกปิด/, 'pak.m has GP % but not this menu until granted');
   await owner.call('saveUser', { email: 'pak.m@eve.co.th', role: 'SUPERVISOR', grantedMenus: ['gptable'] });
-  assert.equal((await sup.call('getGpTable')).tiers.length, d.tiers.length);
+  const granted = await sup.call('getGpTable');
+  assert.equal(granted.tiers.length, d.tiers.length);
+  assert.deepEqual(granted.customerTerms, [], 'customer-specific deals stay with the owner');
+  await owner.call('saveUser', { email: 'pak.m@eve.co.th', role: 'SUPERVISOR', hiddenMenus: ['gptable'] });
+  assert.equal((await sup.call('getGpTable')).tiers.length, d.tiers.length, 'an opt-in menu is not closed through hiddenMenus');
   const listed = (await owner.call('listUsers')).users.find((u) => u.email === 'pak.m@eve.co.th');
   assert.deepEqual(listed.grantedMenus, ['gptable']);
 });

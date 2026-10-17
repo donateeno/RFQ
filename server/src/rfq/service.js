@@ -601,7 +601,9 @@ async function getGpTable(ctx) {
     groups: groups.map((g) => ({ code: g.code, name: g.name, priceTier: g.price_tier, gpTier: g.gp_tier || '',
       source: g.source_row ? `Customer Price Mapping › Customer Groups แถว ${g.source_row}` : 'Customer Price Mapping › Customer Groups',
       terms: terms.filter((t) => t.owner_code.toUpperCase() === g.code.toUpperCase()).map(termView) })),
-    customerTerms: terms.filter((t) => !codes.has(t.owner_code.toUpperCase())).map((t) => Object.assign({ customer: t.owner_code }, termView(t)))
+    // one customer's own deal: owner only, not everyone granted this menu
+    customerTerms: ctx.user.isOwner === true
+      ? terms.filter((t) => !codes.has(t.owner_code.toUpperCase())).map((t) => Object.assign({ customer: t.owner_code }, termView(t))) : []
   };
 }
 

@@ -3,3 +3,5 @@ alter table products add column master_row int;                   -- SMG MASTER 
 alter table customer_groups add column source_row int;            -- Customer Price Mapping 'Customer Groups' row
 alter table group_terms add column source_row int;                -- Customer Price Mapping 'Group Terms' row
 alter table users add column granted_menus text[] not null default '{}';   -- opt-in menus (e.g. ตาราง GP), granted by the owner
+-- last import / alert lookups (data sources page, owner banner, hourly alert check)
+create index audit_log_action_at_idx on audit_log (action, at desc);
