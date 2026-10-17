@@ -54,6 +54,9 @@ const sync = (body) => fetch(env.base + '/api/integrations/import/customer_prici
   method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-token' }, body: JSON.stringify({ sheets: body })
 }).then(async (r) => ({ status: r.status, body: await r.json() }));
 const price = (c, p) => c.call('customerPriceCheck', p);
+// Step values (GP %, amounts) need the GP permission; the owner always has it.
+const priceGp = (p) => price(owner, p);
+const admin2Client = () => env.client('admin2@eve.co.th').login();
 
 test('import the Customer Price Mapping sheet; unusable rows are listed, not loaded', async () => {
   const r = await sync(sheets());
@@ -90,7 +93,7 @@ test('sales find customers by code or name, with the group that applies', async 
 });
 
 test('customer → group → tier price → terms in order (BT: 1,590 → 1,147.50, 27.8304%)', async () => {
-  const r = await price(sales, { customerCode: '300100', productKey: 'HOB-TIER' });
+  const r = await priceGp({ customerCode: '300100', productKey: 'HOB-TIER' });
   assert.equal(r.group.code, 'BT');
   assert.equal(r.customer.groupFrom, 'ช่องทาง SAP (Channel Map)');
   assert.equal(r.gross, 1590, 'BT HOTPRICE of the product');
@@ -109,14 +112,14 @@ test('customer → group → tier price → terms in order (BT: 1,590 → 1,147.
 });
 
 test('customer-only terms, product-scoped terms, expired terms and per-order fees', async () => {
-  const r = await price(sup, { customerCode: '300200', productKey: 'HOB-TIER', qty: 4 });
+  const r = await priceGp({ customerCode: '300200', productKey: 'HOB-TIER', qty: 4 });
   assert.equal(r.gross, 1490, 'GT tier');
   assert.deepEqual(r.steps.map((s) => s.code), ['GP_T20', 'PROMO', 'FREIGHT', 'CASH_DISC'], 'expired 50% left out, ordered by seq');
   assert.deepEqual(r.steps.map((s) => s.after), [1192, 1092, 1042, 1021.16]);
   assert.equal(r.steps[3].forCustomer, true);
   assert.equal(r.total, 4084.64);
 
-  const other = await price(sup, { customerCode: '300200', productKey: 'HC-DEMO-90', qty: 1 });
+  const other = await priceGp({ customerCode: '300200', productKey: 'HC-DEMO-90', qty: 1 });
   assert.equal(other.gross, 18990, 'not tiered: list price');
   assert.deepEqual(other.steps.map((s) => s.code), ['GP_T20', 'FREIGHT', 'CASH_DISC'], 'the barcode promo is not for this product');
   const special = await price(sup, { customerCode: '300300', productKey: 'HOB-TIER' });
@@ -155,34 +158,113 @@ test('GP tier per group: per-item GP from SMG MASTER, BT compounding, T24 + Exw,
   const r = await sync(s);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.ok(r.body.data.errors.some((e) => /BADTIER GP Tier "T99" ไม่ถูกต้อง/.test(e)), r.body.data.errors.join('|'));
-  const boot = await sales.call('getBootstrap');
+  const boot = await owner.call('getBootstrap');
   assert.equal(boot.customerGroups.find((g) => g.code === 'SOUVANNY_T24').gpTier, 'T24');
   assert.equal(boot.customerGroups.find((g) => g.code === 'BADTIER').gpTier, '', 'unknown tier: loaded without one');
 
-  const t18 = await price(sales, { groupCode: 'DEALER_T18', productKey: 'HOOD-GP' });
+  const t18 = await priceGp({ groupCode: 'DEALER_T18', productKey: 'HOOD-GP' });
   assert.deepEqual([t18.gross, t18.net, t18.gpTier.code], [29990, 24591.8, 'T18']);
   assert.deepEqual(t18.steps.map((x) => [x.code, x.pct, x.gpTier, x.defaulted]), [['T18', 0.18, true, false]]);
-  const t24 = await price(sales, { groupCode: 'SOUVANNY_T24', productKey: 'HOOD-GP' });
+  const t24 = await priceGp({ groupCode: 'SOUVANNY_T24', productKey: 'HOOD-GP' });
   assert.deepEqual(t24.steps.map((x) => [x.code, x.after]), [['T24', 22792.4], ['EXW', 22108.63]], '24% then Exw 3%');
   const online = await price(sales, { groupCode: 'DEALER_ONLINE', productKey: 'HOOD-GP' });
   assert.deepEqual([online.gross, online.net], [34590, 23175.3]);
 
-  const bt = await price(sales, { groupCode: 'BT', productKey: 'HOOD-GP' });
+  const bt = await priceGp({ groupCode: 'BT', productKey: 'HOOD-GP' });
   assert.deepEqual(bt.steps.map((x) => [x.code, x.after]), [['BT_GP', 8491.5], ['BT_MKT', 8066.93], ['BT_DC', 7660.35]], 'the tier replaces the BT group terms');
   assert.deepEqual([bt.net, bt.netExVat], [7660.35, 7159.21]);
-  const btDefault = await price(sales, { groupCode: 'BT', productKey: 'HOB-TIER' });
+  const btDefault = await priceGp({ groupCode: 'BT', productKey: 'HOB-TIER' });
   assert.equal(btDefault.net, 1147.5, 'no item rates: 20% × 5% × 5.04% as today');
   assert.ok(btDefault.steps.every((x) => x.defaulted) && btDefault.flags.some((f) => /ใช้ค่าเริ่มต้นของ Tier/.test(f)));
 
-  const nonpc = await price(sales, { groupCode: 'DEALER_NOPC', productKey: 'HP30-NONPC', qty: 2 });
+  const nonpc = await priceGp({ groupCode: 'DEALER_NOPC', productKey: 'HP30-NONPC', qty: 2 });
   assert.deepEqual(nonpc.steps.map((x) => [x.code, x.deduction, x.after]), [['WHOLESALE', 88.5, 501.5]]);
   assert.deepEqual([nonpc.net, nonpc.total, nonpc.gpTier.used], [501.5, 1003, 'NONPC']);
   assert.deepEqual(nonpc.gpTier.wholesale.options, [{ label: 'ซื้อ 12 ชิ้นขึ้นไป', net: 480 }]);
-  const fallback = await price(sales, { groupCode: 'DEALER_NOPC', productKey: 'HOOD-GP' });
+  const fallback = await priceGp({ groupCode: 'DEALER_NOPC', productKey: 'HOOD-GP' });
   assert.deepEqual([fallback.net, fallback.gpTier.used, fallback.gpTier.fallback], [23992, 'T20', true], 'not in WHOLESALE: T20');
   assert.ok(fallback.flags.some((f) => /ไม่มีในใบราคา Non-PC/.test(f)));
-  const noTier = await price(sales, { groupCode: 'NOPC_NOTIER', productKey: 'HP30-NONPC' });
+  const noTier = await priceGp({ groupCode: 'NOPC_NOTIER', productKey: 'HP30-NONPC' });
   assert.deepEqual([noTier.gross, noTier.grossSource, noTier.net], [501.5, 'wholesale', 491.47], 'no price tier: the wholesale price is still found');
   assert.deepEqual(noTier.steps.map((x) => [x.code, x.after]), [['CASH_DISC', 491.47]], 'group terms apply after the wholesale net, as after any tier');
   for (const x of [t18, bt, nonpc, fallback]) assert.ok(!/cost|"mu"|gain/i.test(JSON.stringify(x)), 'GP % and net prices, never cost');
+});
+
+test('GP % is for the owner and the users the owner grants it to; sales and supervisors see net prices only, never cost', async () => {
+  const q = { groupCode: 'DEALER_T18', productKey: 'HOOD-GP' };
+  const hidden = (r) => r.gpHidden === true && !('totalDiscount' in r) && r.steps.length === 0;
+  for (const c of [sales, sup]) {
+    const r = await price(c, q);
+    assert.equal(r.net, 24591.8, 'net price is shown');
+    assert.ok(hidden(r), JSON.stringify(r.steps));
+    assert.equal(r.stepCount, 1);
+    const rest = JSON.stringify(Object.assign({}, r, { group: null }));
+    assert.ok(!/T18|ส่วนลดดีลเลอร์|"pct"|"deduction"/.test(rest), 'no tier code, term names or amounts: ' + rest);
+    assert.equal(r.group.gpTier, '');
+    assert.equal((await c.call('getBootstrap')).customerGroups.find((g) => g.code === 'DEALER_T18').gpTier, '', 'nor in the group list');
+  }
+  const fb = await price(sales, { groupCode: 'DEALER_NOPC', productKey: 'HOOD-GP' });
+  assert.ok(fb.flags.some((f) => /ใช้ราคาดีลเลอร์มาตรฐานแทน/.test(f)) && !/T20/.test(JSON.stringify(fb.flags)));
+  assert.deepEqual(fb.gpTier, { wholesale: null });
+  const np = await price(sales, { groupCode: 'DEALER_NOPC', productKey: 'HP30-NONPC' });
+  assert.deepEqual([np.net, np.gpTier.wholesale.options[0].net], [501.5, 480], 'NON PC net prices are net prices: shown');
+  assert.ok(!hidden(await price(owner, q)));
+
+  await assert.rejects(sup.call('listUsers'), /เฉพาะเจ้าของระบบ/);
+  await assert.rejects(sup.call('saveUser', { email: 'pak.m@eve.co.th', role: 'SUPERVISOR', canViewGp: true }), /เฉพาะเจ้าของระบบ/);
+  const admin2 = await env.client('admin2@eve.co.th').login();
+  await assert.rejects(admin2.call('saveUser', { email: 'admin2@eve.co.th', role: 'ADMIN', canViewGp: true }), /เฉพาะเจ้าของระบบ/, 'ADMIN role is not enough');
+
+  await owner.call('saveUser', { email: 'pak.m@eve.co.th', role: 'SUPERVISOR', canViewGp: true });
+  const granted = await price(sup, q);
+  assert.ok(!hidden(granted));
+  assert.equal(granted.steps[0].pct, 0.18);
+  assert.ok(!/cost|"mu"|gain/i.test(JSON.stringify(granted)), 'GP permission never brings cost');
+  assert.equal((await sup.call('getBootstrap')).user.canSeeGp, true);
+  assert.ok(hidden(await price(sales, q)), 'only pak.m was granted');
+  await owner.call('saveUser', { email: 'pak.m@eve.co.th', role: 'SUPERVISOR' });
+  assert.equal((await price(sup, q)).steps[0].pct, 0.18, 'leaving canViewGp out keeps it');
+
+  const zero = await env.db.query(`update products set gp_rates = gp_rates || '{"T18": 0}' where key = 'HOOD-GP' returning key`);
+  assert.equal(zero.rowCount, 1);
+  const z = await price(sales, q);
+  assert.equal(z.net, 29990);
+  assert.ok(z.flags.some((f) => /^SMG MASTER ไม่ให้ส่วนลดสำหรับสินค้านี้ — อาจยกเลิก ไม่มีสต็อก/.test(f)), z.flags.join('|'));
+  assert.ok(!z.flags.some((f) => /T18/.test(f)), 'no tier codes for users without GP');
+  assert.ok((await price(owner, q)).flags.some((f) => /ไม่ให้ส่วนลดสำหรับสินค้านี้ \(T18\)/.test(f)));
+  const noRates = await price(sales, { groupCode: 'BT', productKey: 'HOB-TIER' });
+  assert.ok(noRates.flags.some((f) => /^ไม่มี GP รายสินค้าใน SMG MASTER — ใช้ค่าเริ่มต้นของ Tier$/.test(f)) && noRates.steps.every((s) => !('defaulted' in s)),
+    'no rate keys or per-step default marks for users without GP');
+  await env.db.query(`update products set gp_rates = gp_rates || '{"BT_MKT": 0, "BT_DC": 0}' where key = 'HOOD-GP'`);
+  assert.ok(!(await price(owner, { groupCode: 'BT', productKey: 'HOOD-GP' })).flags.some((f) => /ไม่ให้ส่วนลด/.test(f)), '0% fee steps are normal');
+});
+
+test('the owner can close menus per user; the server refuses their functions too', async () => {
+  await assert.rejects(owner.call('saveUser', { email: 'akrawat@eve.co.th', role: 'SALES' }), /ตัวเอง/);
+  await assert.rejects(admin2Client().then((c) => c.call('listUsers')), /เฉพาะเจ้าของระบบ/);
+  await owner.call('saveUser', { email: 'pak.m@eve.co.th', role: 'SUPERVISOR', canViewCost: true, can_view_cost: true });
+  assert.equal((await env.db.query(`select can_view_cost from users where email = 'pak.m@eve.co.th'`)).rows[0].can_view_cost, false, 'cost is never granted in the app');
+  const ownerB = { db: env.db, cfg: Object.assign({}, env.cfg, { owners: ['akrawat@eve.co.th', 'owner.b@eve.co.th'] }), user: { email: 'akrawat@eve.co.th', isOwner: true } };
+  await assert.rejects(require('../src/rfq/service').rpc.saveUser(ownerB, { email: 'owner.b@eve.co.th', role: 'SALES' }), /เจ้าของระบบต้องเป็น ADMIN/,
+    'one owner cannot demote another');
+  await owner.call('saveUser', { email: 'first.time@eve.co.th', role: 'SALES' });
+  assert.deepEqual(Object.values((await env.db.query(`select can_view_gp, hidden_menus from users where email = 'first.time@eve.co.th'`)).rows[0]), [false, []]);
+  const users = await owner.call('listUsers');
+  assert.ok(users.menus.some((m) => m.id === 'custprice'));
+  const me = users.users.find((u) => u.email === 'akrawat@eve.co.th');
+  assert.deepEqual([me.isOwner, me.canViewCost], [true, true]);
+  await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', hiddenMenus: ['custprice', 'bundles', 'nope'] });
+  const row = (await owner.call('listUsers')).users.find((u) => u.email === 'sales1@eve.co.th');
+  assert.deepEqual(row.hiddenMenus.sort(), ['bundles', 'custprice'], 'unknown menu ids dropped');
+  assert.deepEqual((await sales.call('getBootstrap')).user.hiddenMenus.sort(), ['bundles', 'custprice']);
+  await assert.rejects(price(sales, { groupCode: 'BT', productKey: 'HOB-TIER' }), /เมนูนี้ถูกปิด/);
+  await assert.rejects(sales.call('searchCustomers', 'ร้าน'), /เมนูนี้ถูกปิด/);
+  await sales.call('priceCheck', { channelId: 'GT_EVE', productKey: 'HC-DEMO-90', specialPrice: 16990, discounts: [0.18, 0, 0] });
+  await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', hiddenMenus: ['check'] });
+  await sales.call('priceCheck', { channelId: 'GT_EVE', productKey: 'HC-DEMO-90', specialPrice: 16990, discounts: [0.18, 0, 0] });
+  await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', hiddenMenus: ['check', 'new'] });
+  await assert.rejects(sales.call('priceCheck', { channelId: 'GT_EVE', productKey: 'HC-DEMO-90', specialPrice: 16990, discounts: [0.18, 0, 0] }), /เมนูนี้ถูกปิด/,
+    'priceCheck is refused only when both menus that use it are closed');
+  await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', hiddenMenus: [] });
+  assert.equal((await price(sales, { groupCode: 'BT', productKey: 'HOB-TIER' })).net, 1147.5);
 });

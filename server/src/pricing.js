@@ -191,7 +191,7 @@ function gpTierTerms(tier, gpRates) {
   return ((tier && tier.steps) || []).map((s) => {
     const own = gpRates && typeof gpRates[s.rate] === 'number' ? gpRates[s.rate] : null;
     return { seq: 0, code: s.rate, name: s.label, method: 'PCT_RUNNING', category: 'GP', pct: own === null ? s.default : own, thb: 0,
-      scope: '', note: '', gpTier: true, defaulted: own === null };
+      scope: '', note: '', gpTier: true, defaulted: own === null, fee: s.fee === true };
   });
 }
 
