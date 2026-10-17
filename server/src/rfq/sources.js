@@ -60,11 +60,11 @@ function columns(t) {
 const rangeOf = (label) => (String(label).match(/'[^']+'!\S+$/) || [label])[0];
 const sheetUrl = (id) => (/^[A-Za-z0-9_-]{20,100}$/.test(id || '') ? `https://docs.google.com/spreadsheets/d/${id}/edit` : '');
 
-/** Last successful and last failed import of each type (audit_log). */
+/** Last successful and last failed n8n import of each type (audit_log); manual imports do not count as a sync. */
 async function lastImports(db) {
   const out = {};
   for (const type of Object.keys(TYPES)) {
-    const q = async (action) => (await db.query(`select at, detail from audit_log where action = $1 and detail->>'type' = $2 order by at desc limit 1`, [action, type])).rows[0] || null;
+    const q = async (action) => (await db.query(`select at, detail from audit_log where action = $1 and user_email = 'n8n' and detail->>'type' = $2 order by at desc limit 1`, [action, type])).rows[0] || null;
     out[type] = { ok: await q('IMPORT'), failed: await q('IMPORT_FAILED') };
   }
   return out;
