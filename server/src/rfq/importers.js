@@ -426,6 +426,9 @@ const MASTER_GP_BLOCKS = [
 const SMG_MAKES = ['EVE', 'EVERCOOK', 'EXCEL'];
 const colName = (i) => (i >= 26 ? String.fromCharCode(64 + Math.floor(i / 26)) : '') + String.fromCharCode(65 + (i % 26));
 const normHead = (s) => String(s || '').replace(/\s+/g, ' ').trim().toUpperCase();
+// What a header check found. A number means the header row moved and that cell may be a cost: never quoted
+// (the message goes to the import log, the owners' email and LINE).
+const foundText = (head, i) => { const v = cell(head, i); return !v ? 'ช่องว่าง' : toNum(v) !== null ? 'ตัวเลข (หัวตารางอาจเลื่อนแถว)' : `"${v.slice(0, 60)}"`; };
 
 function smgRows(sheets, name) {
   const spec = SMG_SHEETS[name];
@@ -433,7 +436,7 @@ function smgRows(sheets, name) {
   if (!Array.isArray(values) || values.length < 2) throw new UserError(`ไม่มีข้อมูลจาก ${spec.label}`);
   const head = values[0] || [];
   const wrong = Object.values(spec.cols).filter(([i, h]) => ![].concat(h).some((x) => normHead(head[i]) === normHead(x)))
-    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ "${cell(head, i)}"`);
+    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ ${foundText(head, i)}`);
   if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับที่ระบบรู้จัก — ${wrong.join('; ')}`);
   return values.slice(1).map((r, n) => {
     const o = { _row: r || [], _n: (spec.headRow || 1) + 1 + n };   // _n: row number in the sheet
@@ -449,7 +452,7 @@ function masterGpColumns(sheets) {
   for (const block of MASTER_GP_BLOCKS) {
     if (!Object.values(block).some(([i]) => cell(head, i))) continue;
     const wrong = Object.values(block).filter(([i, h]) => normHead(head[i]) !== normHead(h))
-      .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${h}" แต่พบ "${cell(head, i)}"`);
+      .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${h}" แต่พบ ${foundText(head, i)}`);
     if (wrong.length) throw new UserError(`หัวตารางของ ${SMG_SHEETS.master.label} ไม่ตรงกับที่ระบบรู้จัก — ${wrong.join('; ')}`);
     Object.assign(cols, block);
   }
@@ -682,7 +685,7 @@ function mappingRows(sheets, name) {
   if (!Array.isArray(values) || !values.length) throw new UserError(`ไม่มีข้อมูลจาก ${spec.label}`);
   const head = values[0] || [];
   const wrong = Object.values(spec.cols).filter(([i, h]) => ![].concat(h).some((x) => normHead(head[i]) === normHead(x)))
-    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ "${cell(head, i)}"`);
+    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ ${foundText(head, i)}`);
   if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับแม่แบบ — ${wrong.join('; ')}`);
   return values.slice(1).map((r, n) => {
     const o = { _row: r || [], _n: (spec.headRow || 1) + 1 + n };

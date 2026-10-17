@@ -5,6 +5,7 @@
  * from the importers' own header checks, so the page shows exactly what the import reads. Never shows cost values.
  */
 const { SMG_SHEETS, MASTER_GP_BLOCKS, MAPPING_SHEETS, colName } = require('./importers');
+const { tx } = require('../db');
 
 const FILES = {
   cost: { name: 'COST UPDATE 2021 for import', use: 'ต้นทุน ต้นทุนชุดเซ็ต และราคาส่ง Non-PC' },
@@ -133,9 +134,15 @@ async function checkAndAlert(db, cfg, notify, staleHours) {
   const list = problems(await sourceStatus(db, staleHours));
   const to = (await db.query('select email from users where active and email = any($1::text[])', [cfg.owners])).rows.map((r) => r.email);
   for (const p of list) {
-    const sent = await db.query(`select 1 from audit_log where action = 'ALERT' and detail->>'key' = $1 and at > now() - interval '24 hours'`, [p.key]);
-    if (sent.rowCount) continue;
-    await db.query(`insert into audit_log (user_email, action, detail) values ('system', 'ALERT', $1)`, [JSON.stringify({ key: p.key, text: p.text })]);
+    // The SMG and Customer Price Mapping imports run at the same time: lock per key so a problem is sent once.
+    const fresh = await tx(db, async (c) => {
+      await c.query('select pg_advisory_xact_lock(hashtext($1))', ['rfq-alert:' + p.key]);
+      const sent = await c.query(`select 1 from audit_log where action = 'ALERT' and detail->>'key' = $1 and at > now() - interval '24 hours'`, [p.key]);
+      if (sent.rowCount) return false;
+      await c.query(`insert into audit_log (user_email, action, detail) values ('system', 'ALERT', $1)`, [JSON.stringify({ key: p.key, text: p.text })]);
+      return true;
+    });
+    if (!fresh) continue;
     notify({
       event: 'source.alert', to, line: cfg.alertLineTo, subject: '[RFQ] แจ้งเตือนแหล่งข้อมูล: ' + p.text.slice(0, 120),
       text: `[RFQ] ${p.text}\n${cfg.baseUrl}/#sources`,

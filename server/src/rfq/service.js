@@ -556,6 +556,7 @@ async function currentEveList(db, date) {
  * and each customer group's terms — every number with the file / tab / column or row it comes from. No cost.
  */
 async function getGpTable(ctx) {
+  menuGuard(ctx.user, 'getGpTable');   // opt-in menu ตาราง GP (also checked by the RPC route)
   const { db, cfg } = ctx;
   const date = todayIso(cfg.timezone);
   const list = await currentEveList(db, date);
@@ -606,6 +607,7 @@ async function getGpTable(ctx) {
 
 /** One item's GP rates with the exact cells they came from (MASTER row, WHOLESALE row). No cost. */
 async function getGpItem(ctx, key) {
+  menuGuard(ctx.user, 'getGpItem');
   key = str(key, 200);
   if (!key) throw new UserError('กรุณาระบุสินค้า');
   const list = await currentEveList(ctx.db, todayIso(ctx.cfg.timezone));

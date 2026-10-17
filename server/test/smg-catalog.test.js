@@ -352,6 +352,14 @@ test('data sources: every file, tab, range and column; links from n8n; missing o
   assert.match(failed[0].text, /PROMOTION/);
   assert.equal((await owner.call('getDataSources')).types.find((t) => t.type === 'smg_catalog').failed, true);
 
+  // header row moved down by one: the check must not quote the data cell it finds (column P is cost)
+  const shifted = sheets();
+  shifted.cost = shifted.cost.slice(1);
+  const moved = await syncWith(shifted, {});
+  assert.equal(moved.status, 400);
+  assert.match(moved.body.error, /คอลัมน์ P ต้องเป็น "ราคาต้นทุนนำเข้า\/หน่วย" แต่พบ ตัวเลข/);
+  assert.ok(!/1,000|9,999/.test(moved.body.error) && !alerts().some((m) => /1,000|9,999/.test(m.subject + m.text + m.html)), 'no cost in the error or the alerts');
+
   const ok = Object.assign(sheets(), { sets: [setHead, setRow(SET.ok, [['HOB-ALPHA', '1,000.00'], ['HOOD-DELTA', '5,000.00']], '6,000.00')], wholesale: [whHead, wh('TRUE', EAN.A, 'ราคาส่ง', '501.50')] });
   assert.equal((await syncWith(ok, { files: { cost: FILE_ID.cost } })).status, 200);
   const healthy = await owner.call('getDataSources');
