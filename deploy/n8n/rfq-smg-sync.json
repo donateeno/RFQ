@@ -72,7 +72,7 @@
     },
     {
       "parameters": {
-        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_COST_FILE_ID_HERE/values:batchGet?ranges=%272021%27!A3%3AAQ&ranges=relationship!A2%3AAA&ranges=WHOLESALE!A1%3AM&valueRenderOption=FORMATTED_VALUE",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_COST_FILE_ID_HERE/values:batchGet?ranges=%272021%27!A3%3AAQ&valueRenderOption=FORMATTED_VALUE",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "googleSheetsOAuth2Api",
         "options": {}
@@ -94,7 +94,57 @@
     },
     {
       "parameters": {
-        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_NATIONWIDE_FILE_ID_HERE/values/%27Pricelist%20update%27!A2%3AI?valueRenderOption=FORMATTED_VALUE",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_COST_FILE_ID_HERE/values:batchGet?ranges=relationship!A2%3AAA&valueRenderOption=FORMATTED_VALUE",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "5b1f0c2e-8d4a-5e6b-9c71-3a2f4e6d8b01",
+      "name": "Read set costs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        260
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "notes": "Optional tab: if it is missing or renamed the sync goes on without it and the app alerts the owner."
+    },
+    {
+      "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_COST_FILE_ID_HERE/values:batchGet?ranges=WHOLESALE!A1%3AM&valueRenderOption=FORMATTED_VALUE",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "7c2e1d3f-9e5b-5f7c-8d82-4b3a5f7e9c02",
+      "name": "Read WHOLESALE",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        260
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "notes": "Optional tab: if it is missing or renamed the sync goes on without it and the app alerts the owner."
+    },
+    {
+      "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/PUT_NATIONWIDE_FILE_ID_HERE/values:batchGet?ranges=%27Pricelist%20update%27!A2%3AI&valueRenderOption=FORMATTED_VALUE",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "googleSheetsOAuth2Api",
         "options": {}
@@ -104,7 +154,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        720,
+        960,
         100
       ],
       "credentials": {
@@ -126,7 +176,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        960,
+        1200,
         100
       ],
       "credentials": {
@@ -138,14 +188,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Period name from the MASTER file title, e.g. \"SMG MASTER OCT26-JAN27\" → OCT26-JAN27.\n// The period must already exist in the app (ตั้งค่า → รอบราคา → สร้างรอบราคา) or the import is refused (409).\n// Newest file whose title starts with \"SMG MASTER \" (skips \"Copy of SMG MASTER …\").\nconst file = ($('Find newest SMG MASTER').first().json.files || []).find((f) => /^SMG MASTER\\s+\\S/i.test(f.name));\nif (!file) throw new Error('No spreadsheet named \"SMG MASTER <period>\" found');\nconst priceList = file.name.replace(/^SMG MASTER\\s*/i, '').trim();\nconst cost = $('Read cost 2021').first().json.valueRanges;   // '2021'!A3:AQ, relationship!A2:AA (set costs), WHOLESALE!A1:M (NON PC net prices)\nconst master = $('Read MASTER + HOTPRICE').first().json.valueRanges;\nreturn [{ json: { priceList, body: { sheets: {\n  cost: cost[0].values,\n  sets: cost[1].values,   // undefined (left out) when the tab is empty\n  wholesale: cost[2] && cost[2].values,\n  pricelist: $('Read Nationwide pricelist').first().json.values,\n  master: master[0].values,\n  hot: master[1].values\n} } } }];"
+        "jsCode": "// Period name from the MASTER file title, e.g. \"SMG MASTER OCT26-JAN27\" → OCT26-JAN27.\n// The period must already exist in the app (ตั้งค่า → รอบราคา → สร้างรอบราคา) or the import is refused (409).\n// Newest file whose title starts with \"SMG MASTER \" (skips \"Copy of SMG MASTER …\").\nconst file = ($('Find newest SMG MASTER').first().json.files || []).find((f) => /^SMG MASTER\\s+\\S/i.test(f.name));\nif (!file) throw new Error('No spreadsheet named \"SMG MASTER <period>\" found');\nconst priceList = file.name.replace(/^SMG MASTER\\s*/i, '').trim();\n// Optional tabs (set costs, NON PC wholesale): a missing or renamed tab does not stop the sync;\n// the app lists it under เจ้าของระบบ › แหล่งข้อมูล and alerts the owner (email + LINE).\n// Only \"tab not found\" (Google: \"Unable to parse range\") counts as missing; any other error (quota, outage)\n// stops the sync so the period's set costs and wholesale prices are not cleared by a passing failure.\nconst optional = (node) => {\n  const j = $(node).first().json;\n  if (j && j.valueRanges) return j.valueRanges[0].values || [];\n  const err = JSON.stringify((j && j.error) || j || {});\n  if (/Unable to parse range/i.test(err)) return undefined;\n  throw new Error(node + ' failed: ' + err.slice(0, 300));\n};\nconst cost = $('Read cost 2021').first().json;              // '2021'!A3:AQ\nconst nationwide = $('Read Nationwide pricelist').first().json;\nconst master = $('Read MASTER + HOTPRICE').first().json.valueRanges;\nconst sets = optional('Read set costs');                     // relationship!A2:AA\nconst wholesale = optional('Read WHOLESALE');                // WHOLESALE!A1:M\nconst missing = [];\nif (sets === undefined) missing.push('sets');\nif (wholesale === undefined) missing.push('wholesale');\nreturn [{ json: { priceList, body: {\n  sheets: { cost: cost.valueRanges[0].values, sets, wholesale, pricelist: nationwide.valueRanges[0].values, master: master[0].values, hot: master[1].values },\n  // spreadsheet IDs: links on the app's data sources page\n  files: { cost: cost.spreadsheetId, nationwide: nationwide.spreadsheetId, master: { id: file.id, name: file.name } },\n  missing\n} } }];"
       },
       "id": "c7a12680-6a8e-5611-af52-52b12bead934",
       "name": "Combine sheets",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1200,
+        1440,
         100
       ]
     },
@@ -167,7 +217,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1440,
+        1680,
         100
       ],
       "credentials": {
@@ -201,7 +251,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Tabs of the Customer Price Mapping Template, in the order requested above.\nconst v = $json.valueRanges.map((r) => r.values || []);\nreturn [{ json: { sheets: { terms: v[0], groups: v[1], groupTerms: v[2], channels: v[3], customerMap: v[4], customers: v[5] } } }];"
+        "jsCode": "// Tabs of the Customer Price Mapping Template, in the order requested above.\nconst v = $json.valueRanges.map((r) => r.values || []);\nreturn [{ json: { sheets: { terms: v[0], groups: v[1], groupTerms: v[2], channels: v[3], customerMap: v[4], customers: v[5] },\n  files: { mapping: $json.spreadsheetId } } }];"
       },
       "id": "9a8732e1-5292-5e36-91fd-474f9a0645c5",
       "name": "Combine mapping tabs",
@@ -220,7 +270,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ sheets: $json.sheets }) }}",
+        "jsonBody": "={{ JSON.stringify({ sheets: $json.sheets, files: $json.files }) }}",
         "options": {
           "timeout": 120000
         }
@@ -289,7 +339,7 @@
       "main": [
         [
           {
-            "node": "Read Nationwide pricelist",
+            "node": "Read set costs",
             "type": "main",
             "index": 0
           }
@@ -350,10 +400,32 @@
           }
         ]
       ]
+    },
+    "Read set costs": {
+      "main": [
+        [
+          {
+            "node": "Read WHOLESALE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read WHOLESALE": {
+      "main": [
+        [
+          {
+            "node": "Read Nationwide pricelist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
-  "_comment": "Daily 06:15 and on the app's 'ซิงค์ราคาตอนนี้' button (SYNC_WEBHOOK_URL = this webhook's production URL; header auth = the RFQ integration token). Reads COST UPDATE 2021 for import '2021'!A3:AQ and 'relationship'!A2:AA (set costs, column K) and 'WHOLESALE'!A1:M (NON PC net prices, column M of the DisplayinUPC = TRUE row), SMG PRICELIST NATIONWIDE 'Pricelist update'!A2:I and the newest 'SMG MASTER <period>' file (MASTER!A1:Y incl. the per-item GP columns K–O, T–V, Y; HOTPRICE!A1:G), then posts them to /api/integrations/import/smg_catalog?priceList=<period>. The app checks every header row, refuses an unknown period (create it first in ตั้งค่า → รอบราคา) and replaces that period's EVE/Evercook/Excel products in one transaction. Replace PUT_*_FILE_ID_HERE, rfq.example.com and the credentials. Second branch: reads the Customer Price Mapping Template (Term Library, Customer Groups A:I incl. GP Tier, Group Terms, Channel Map, Customer Map, Active Customers from row 6) and posts it to /api/integrations/import/customer_pricing, which replaces the customer price lookup data. Replace PUT_MAPPING_FILE_ID_HERE."
+  "_comment": "Daily 06:15 and on the app's 'ซิงค์ราคาตอนนี้' button (SYNC_WEBHOOK_URL = this webhook's production URL; header auth = the RFQ integration token). Reads COST UPDATE 2021 for import '2021'!A3:AQ, then the optional tabs 'relationship'!A2:AA (set costs, column K) and 'WHOLESALE'!A1:M (NON PC net prices, column M of the DisplayinUPC = TRUE row) in their own nodes that continue on error (a missing tab is reported to the app, which alerts the owner), SMG PRICELIST NATIONWIDE 'Pricelist update'!A2:I and the newest 'SMG MASTER <period>' file (MASTER!A1:Y incl. the per-item GP columns K–O, T–V, Y; HOTPRICE!A1:G), then posts them to /api/integrations/import/smg_catalog?priceList=<period>. The app checks every header row, refuses an unknown period (create it first in ตั้งค่า → รอบราคา) and replaces that period's EVE/Evercook/Excel products in one transaction. Replace PUT_*_FILE_ID_HERE, rfq.example.com and the credentials. Second branch: reads the Customer Price Mapping Template (Term Library, Customer Groups A:I incl. GP Tier, Group Terms, Channel Map, Customer Map, Active Customers from row 6) and posts it to /api/integrations/import/customer_pricing, which replaces the customer price lookup data. Replace PUT_MAPPING_FILE_ID_HERE. Each import also sends the spreadsheet IDs (files) for the app's data sources page."
 }

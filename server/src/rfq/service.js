@@ -15,6 +15,8 @@ const { getSettings, getCatalog, getChannel, lookupItem, landedFromRow, priceCon
 const { importData, parseCsv } = require('./importers');
 const notifyMsg = require('./notifications');
 const { loadGpConfig } = require('../seed');
+const sources = require('./sources');
+const { MASTER_GP_BLOCKS, colName } = require('./importers');
 
 const STATUS = { PENDING: 'Pending', APPROVED: 'Approved', REJECTED: 'Rejected', CANCELLED: 'Cancelled', CLOSED: 'Closed' };
 const DISPLAY_STATUSES = ['Pending', 'Approved', 'Expired', 'Rejected', 'Cancelled', 'Closed'];
@@ -50,13 +52,17 @@ const MENUS = [
   { id: 'approved', label: 'ราคาที่อนุมัติแล้ว', rpc: ['searchApprovedPrices'] },
   { id: 'approvals', label: 'รออนุมัติ', approver: true, rpc: ['decideRequests', 'listRequests', 'getLineContext'] },
   { id: 'monitor', label: 'คำขอทั้งหมด', approver: true, rpc: ['listRequests', 'getLineContext'] },
-  { id: 'dashboard', label: 'ภาพรวม', approver: true, rpc: ['getDashboard'] }
+  { id: 'dashboard', label: 'ภาพรวม', approver: true, rpc: ['getDashboard'] },
+  // Opt-in: closed until the owner grants it (users.granted_menus). Shows GP %, so it also needs the GP permission.
+  { id: 'gptable', label: 'ตาราง GP', optIn: true, needsGp: true, rpc: ['getGpTable', 'getGpItem'] }
 ];
-const MENU_IDS = MENUS.map((m) => m.id);
+const MENU_IDS = MENUS.filter((m) => !m.optIn).map((m) => m.id);
+const OPT_IN_IDS = MENUS.filter((m) => m.optIn).map((m) => m.id);
+const menuOpen = (user, m) => user.isOwner === true || ((m.optIn ? (user.grantedMenus || []).includes(m.id) : !(user.hiddenMenus || []).includes(m.id)) &&
+  (!m.needsGp || user.canSeeGp === true));
 function menuGuard(user, fn) {
-  const hidden = user.hiddenMenus || [];
   const menus = MENUS.filter((m) => m.rpc.includes(fn));
-  if (menus.length && menus.every((m) => hidden.includes(m.id))) throw new UserError('เมนูนี้ถูกปิดสำหรับบัญชีของคุณ', 403);
+  if (menus.length && !menus.some((m) => menuOpen(user, m))) throw new UserError('เมนูนี้ถูกปิดสำหรับบัญชีของคุณ', 403);
 }
 
 function todayIso(tz) {
@@ -252,13 +258,18 @@ async function getBootstrap(ctx) {
   const customers = (await db.query(`select distinct customer from requests where customer <> '' order by customer limit 3000`)).rows.map((r) => r.customer);
   const out = {
     user: { email: user.email, name: user.name, role: user.role, canApprove: user.role !== 'SALES', isAdmin: user.role === 'ADMIN', canSeeCost: canSeeCost(user),
-      isOwner: user.isOwner === true, canSeeGp: user.canSeeGp === true, hiddenMenus: user.hiddenMenus || [] },
+      isOwner: user.isOwner === true, canSeeGp: user.canSeeGp === true, hiddenMenus: user.hiddenMenus || [],
+      openMenus: MENUS.filter((m) => m.optIn && menuOpen(user, m)).map((m) => m.id) },
     groups: catalog.map((g) => ({ id: g.id, name: g.name, description: g.description, costSource: g.costSource, channels: g.channels })),
     settings: { defaultValidityDays: settings.DEFAULT_VALIDITY_DAYS, maxValidityDays: settings.MAX_VALIDITY_DAYS },
     products, bundles, projects, landed, customers, priceLists, today,
     customerGroups: (await db.query('select code, name, price_tier, gp_tier from customer_groups order by code')).rows
       .map((g) => ({ code: g.code, name: g.name, tier: g.price_tier, gpTier: canSeeGpOf(user) ? g.gp_tier || '' : '' }))
   };
+  if (user.isOwner === true) {
+    // Banner for the owner: sources that failed, are missing or have not synced (same list as the alerts).
+    out.alerts = sources.problems(await sources.sourceStatus(db, settings.SYNC_STALE_HOURS)).map((p) => p.text);
+  }
   if (out.user.canApprove) {
     out.pendingCount = Number((await db.query(`select count(*) from requests where status = 'Pending'`)).rows[0].count);
   }
@@ -522,6 +533,101 @@ async function customerPriceCheck(ctx, payload) {
     out.gpHidden = true;
   }
   return out;
+}
+
+// ---------------------------------------------------------------- data sources and GP table
+
+/** เจ้าของระบบ › แหล่งข้อมูล: every synced file, tab, range and column, with the state of its last sync. */
+async function getDataSources(ctx) {
+  owner(ctx);
+  const s = await getSettings(ctx.db);
+  const status = await sources.sourceStatus(ctx.db, s.SYNC_STALE_HOURS);
+  return Object.assign(status, { problems: sources.problems(status).map((p) => p.text), lineAlerts: ctx.cfg.alertLineTo.length });
+}
+
+const GP_COL = {};
+MASTER_GP_BLOCKS.forEach((b) => Object.entries(b).forEach(([k, [i, h]]) => { GP_COL[k] = { col: colName(i), header: h }; }));
+
+async function currentEveList(db, date) {
+  return ((await priceContext(db, date)).EVE || {}).current || null;
+}
+
+/**
+ * ตาราง GP (opt-in menu): channel discounts, GP tiers with the spread of per-item rates in the current price list,
+ * and each customer group's terms — every number with the file / tab / column or row it comes from. No cost.
+ */
+async function getGpTable(ctx) {
+  menuGuard(ctx.user, 'getGpTable');   // opt-in menu ตาราง GP (also checked by the RPC route)
+  const { db, cfg } = ctx;
+  const date = todayIso(cfg.timezone);
+  const list = await currentEveList(db, date);
+  const master = 'SMG MASTER ' + (list ? list.name : '<รอบราคา>');
+  const channels = (await getCatalog(db, false)).map((g) => ({
+    group: g.name, groupId: g.id,
+    channels: g.channels.map((c) => ({ id: c.id, name: c.name, priceTier: c.priceTier,
+      discounts: c.discounts.map((d) => ({ label: d.label, default: d.default, min: d.min ?? null, max: d.max ?? null, editable: d.editable === true })),
+      source: `config/price-groups.json › ${g.id} › ${c.id}` }))
+  }));
+  const rateStats = async (key) => {
+    if (!list) return { rated: 0, missing: 0, values: [] };
+    const rows = (await db.query(`select (gp_rates->>$2)::numeric as r, count(*)::int as n from products
+      where price_list_id = $1 and brand = 'EVE' group by 1 order by 2 desc`, [list.id, key])).rows;
+    const values = rows.filter((r) => r.r !== null).map((r) => ({ rate: Number(r.r), items: r.n }));
+    return { rated: values.reduce((t, v) => t + v.items, 0), missing: (rows.find((r) => r.r === null) || { n: 0 }).n, values: values.slice(0, 8) };
+  };
+  const tiers = [];
+  for (const t of gpTierDefs().values()) {
+    if (t.netPrice) {
+      const n = list ? (await db.query(`select count(*)::int as n from products where price_list_id = $1 and brand = 'EVE' and (wholesale->>'net') is not null`, [list.id])).rows[0].n : 0;
+      tiers.push({ code: t.code, netPrice: true, fallback: t.fallback, items: n,
+        source: "COST UPDATE 2021 for import › WHOLESALE › คอลัมน์ M (GP DISC.) ของแถว DisplayinUPC = TRUE", default: `ไม่มีในใบราคา → GP Tier ${t.fallback}` });
+      continue;
+    }
+    const steps = [];
+    for (const s of t.steps) {
+      steps.push({ rate: s.rate, label: s.label, default: s.default, fee: s.fee === true, stats: await rateStats(s.rate),
+        source: GP_COL[s.rate] ? `${master} › MASTER › คอลัมน์ ${GP_COL[s.rate].col} (${GP_COL[s.rate].header})` : '',
+        defaultSource: `config/price-groups.json › gpTiers › ${t.code}` });
+    }
+    tiers.push({ code: t.code, replacesTerms: t.replacesTerms || [], steps });
+  }
+  const groups = (await db.query('select code, name, price_tier, gp_tier, source_row from customer_groups order by code')).rows;
+  const terms = (await db.query(`select t.owner_code, t.seq, t.term_code, t.pct, t.thb, t.scope, t.valid_from, t.valid_to, t.source_row, p.name, p.method
+    from group_terms t join price_terms p on p.code = t.term_code order by t.owner_code, t.seq, t.id`)).rows;
+  const termView = (t) => ({ seq: t.seq, code: t.term_code, name: t.name, method: t.method, pct: t.pct, thb: t.thb, scope: t.scope,
+    validFrom: t.valid_from || '', validTo: t.valid_to || '', source: t.source_row ? `Customer Price Mapping › Group Terms แถว ${t.source_row}` : 'Customer Price Mapping › Group Terms' });
+  const codes = new Set(groups.map((g) => g.code.toUpperCase()));
+  return {
+    priceList: list ? list.name : '', master, channels, tiers,
+    groups: groups.map((g) => ({ code: g.code, name: g.name, priceTier: g.price_tier, gpTier: g.gp_tier || '',
+      source: g.source_row ? `Customer Price Mapping › Customer Groups แถว ${g.source_row}` : 'Customer Price Mapping › Customer Groups',
+      terms: terms.filter((t) => t.owner_code.toUpperCase() === g.code.toUpperCase()).map(termView) })),
+    // one customer's own deal: owner only, not everyone granted this menu
+    customerTerms: ctx.user.isOwner === true
+      ? terms.filter((t) => !codes.has(t.owner_code.toUpperCase())).map((t) => Object.assign({ customer: t.owner_code }, termView(t))) : []
+  };
+}
+
+/** One item's GP rates with the exact cells they came from (MASTER row, WHOLESALE row). No cost. */
+async function getGpItem(ctx, key) {
+  menuGuard(ctx.user, 'getGpItem');
+  key = str(key, 200);
+  if (!key) throw new UserError('กรุณาระบุสินค้า');
+  const list = await currentEveList(ctx.db, todayIso(ctx.cfg.timezone));
+  const p = list ? await productIn(ctx.db, list.id, 'EVE', key) : null;
+  if (!p) throw new UserError(`ไม่พบ "${key}" ในรอบราคาปัจจุบัน`, 404);
+  const master = 'SMG MASTER ' + list.name;
+  const rates = Object.entries(GP_COL).map(([k, c]) => ({
+    rate: k, col: c.col, header: c.header, value: p.gp_rates && typeof p.gp_rates[k] === 'number' ? p.gp_rates[k] : null,
+    cell: p.master_row ? `${master} › MASTER!${c.col}${p.master_row}` : ''
+  }));
+  const w = p.wholesale && p.wholesale.net ? p.wholesale : null;
+  return {
+    key: p.key, name: p.name, barcode: p.barcode || '', status: p.status || '', priceList: list.name, masterRow: p.master_row,
+    prices: { GT: p.price_gt, DGT: p.price_dgt, BT: p.price_bt },
+    rates,
+    wholesale: w ? { net: w.net, label: w.label || '', options: w.options || [], cell: w.row ? `COST UPDATE 2021 for import › WHOLESALE!M${w.row}` : '' } : null
+  };
 }
 
 async function submitRequest(ctx, payload) {
@@ -883,7 +989,7 @@ async function priceCheckAlerts(db, settings) {
 async function saveSettings(ctx, changes) {
   const user = admin(ctx);
   changes = changes || {};
-  const numeric = { VAT_RATE: [0, 0.3], DEFAULT_VALIDITY_DAYS: [1, 365], MAX_VALIDITY_DAYS: [1, 365], PRICE_CHECK_ALERT: [2, 1000], PRICE_CHECK_LIMIT: [2, 1000], PRICE_CHECK_PER_HOUR: [10, 10000] };
+  const numeric = { VAT_RATE: [0, 0.3], DEFAULT_VALIDITY_DAYS: [1, 365], MAX_VALIDITY_DAYS: [1, 365], PRICE_CHECK_ALERT: [2, 1000], PRICE_CHECK_LIMIT: [2, 1000], PRICE_CHECK_PER_HOUR: [10, 10000], SYNC_STALE_HOURS: [2, 240] };
   const current = await getSettings(ctx.db);
   const next = Object.assign({}, current);
   for (const key of Object.keys(changes)) {
@@ -911,12 +1017,12 @@ async function saveSettings(ctx, changes) {
 /** Owner menu ผู้ใช้และสิทธิ์: every user with role, active, what they may see and which menus are closed. */
 async function listUsers(ctx) {
   owner(ctx);
-  const rows = (await ctx.db.query('select email, name, role, active, can_view_cost, can_view_gp, hidden_menus, last_login_at from users order by role desc, email')).rows;
+  const rows = (await ctx.db.query('select email, name, role, active, can_view_cost, can_view_gp, hidden_menus, granted_menus, last_login_at from users order by role desc, email')).rows;
   return {
-    menus: MENUS.map((m) => ({ id: m.id, label: m.label, approver: !!m.approver })),
+    menus: MENUS.map((m) => ({ id: m.id, label: m.label, approver: !!m.approver, optIn: !!m.optIn, needsGp: !!m.needsGp })),
     users: rows.map((u) => ({
       email: u.email, name: u.name, role: u.role, active: u.active, canViewCost: u.can_view_cost, isOwner: ctx.cfg.owners.includes(u.email),
-      canViewGp: u.can_view_gp, hiddenMenus: u.hidden_menus || [], lastLoginAt: u.last_login_at ? u.last_login_at.toISOString() : ''
+      canViewGp: u.can_view_gp, hiddenMenus: u.hidden_menus || [], grantedMenus: u.granted_menus || [], lastLoginAt: u.last_login_at ? u.last_login_at.toISOString() : ''
     }))
   };
 }
@@ -935,13 +1041,16 @@ async function saveUser(ctx, u) {
   if (ctx.cfg.owners.includes(email) && (role !== 'ADMIN' || !active)) throw new UserError('เจ้าของระบบต้องเป็น ADMIN และใช้งานอยู่ (เปลี่ยนได้ที่ OWNERS บนเซิร์ฟเวอร์)');
   // Left out = unchanged. Cost is never set here (COST_VIEWERS on the server only).
   const canViewGp = u.canViewGp === undefined ? null : u.canViewGp === true;
-  const hidden = u.hiddenMenus === undefined ? null : [...new Set([].concat(u.hiddenMenus || []).map(String))].filter((m) => MENU_IDS.includes(m));
+  const ids = (v, allowed) => (v === undefined ? null : [...new Set([].concat(v || []).map(String))].filter((m) => allowed.includes(m)));
+  const hidden = ids(u.hiddenMenus, MENU_IDS);
+  const granted = ids(u.grantedMenus, OPT_IN_IDS);
   await tx(ctx.db, async (c) => {
-    await c.query(`insert into users (email, name, role, active, can_view_gp, hidden_menus) values ($1, $2, $3, $4, coalesce($5, false), coalesce($6, '{}'::text[]))
+    await c.query(`insert into users (email, name, role, active, can_view_gp, hidden_menus, granted_menus)
+      values ($1, $2, $3, $4, coalesce($5, false), coalesce($6, '{}'::text[]), coalesce($7, '{}'::text[]))
       on conflict (email) do update set name = coalesce(nullif(excluded.name, ''), users.name), role = excluded.role, active = excluded.active,
-        can_view_gp = coalesce($5, users.can_view_gp), hidden_menus = coalesce($6, users.hidden_menus)`,
-    [email, str(u.name, 100), role, active, canViewGp, hidden]);
-    await log(c, me.email, 'SAVE_USER', [], { email, role, active, canViewGp, hiddenMenus: hidden });
+        can_view_gp = coalesce($5, users.can_view_gp), hidden_menus = coalesce($6, users.hidden_menus), granted_menus = coalesce($7, users.granted_menus)`,
+    [email, str(u.name, 100), role, active, canViewGp, hidden, granted]);
+    await log(c, me.email, 'SAVE_USER', [], { email, role, active, canViewGp, hiddenMenus: hidden, grantedMenus: granted });
   });
   return listUsers(ctx);
 }
@@ -1073,7 +1182,7 @@ module.exports = {
     getBootstrap, priceCheck, submitRequest, listMyRequests, listRequests, searchApprovedPrices, getLineContext,
     decideRequests, cancelMyRequests, getDashboard, getAdminInfo, saveSettings, saveUser, importCsv,
     createPriceList, savePriceList, deletePriceList, createBundle, deleteBundle, requestCatalogSync,
-    searchCustomers, customerPriceCheck, listUsers
+    searchCustomers, customerPriceCheck, listUsers, getDataSources, getGpTable, getGpItem
   },
   // internal
   todayIso, STATUS, menuGuard, MENUS

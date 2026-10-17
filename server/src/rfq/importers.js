@@ -397,17 +397,17 @@ async function syncCounters(c) {
  * instead of loading wrong numbers.
  */
 const SMG_SHEETS = {
-  cost: { label: "COST UPDATE 2021 for import '2021'!A3:AQ", cols: { ean: [0, 'EAN13'], model: [2, "EVE's Model"], cost: [15, 'ราคาต้นทุนนำเข้า/หน่วย'], st: [42, 'ST'] } },
-  pricelist: { label: "SMG PRICELIST NATIONWIDE 'Pricelist update'!A2:I", cols: {
+  cost: { label: "COST UPDATE 2021 for import '2021'!A3:AQ", headRow: 3, cols: { ean: [0, 'EAN13'], model: [2, "EVE's Model"], cost: [15, 'ราคาต้นทุนนำเข้า/หน่วย'], st: [42, 'ST'] } },
+  pricelist: { label: "SMG PRICELIST NATIONWIDE 'Pricelist update'!A2:I", headRow: 2, cols: {
     status: [0, 'STATUS'], ean: [1, 'EAN13'], brand: [2, 'BRAND'], category: [3, 'CATEGORY'], name: [4, 'DESCRIPTION/MODEL'],
     normal: [5, 'NORMAL'], promotion: [6, 'PROMOTION'], priceCat: [8, 'PRICE CAT.'] } },
-  master: { label: "SMG MASTER 'MASTER'!A1:R", cols: {
+  master: { label: "SMG MASTER 'MASTER'!A1:Y", cols: {
     item: [0, 'Item No.'], brand: [1, 'ยี่ห้อ'], name: [2, 'Item Description'], group: [4, 'Group Name'], oldSpecial: [6, 'ราคาขายพิเศษเดิม'],
     GT: [7, 'GT HOTPRICE'], DGT: [8, 'DGT HOTPRICE'], BT: [17, 'BT HOTPRICE'] } },
   hot: { label: "SMG MASTER 'HOTPRICE'!A1:G", cols: {
     saleCh: [0, 'SALE CH.'], ean: [1, 'EAN13'], name: [3, 'MODEL NAME'], BT: [4, 'BT HOTPRICE'], DGT: [5, 'DGT HOTPRICE'], GT: [6, 'GT HOTPRICE'] } },
   // Optional: set (bundle SKU) costs. K = D+F+H+J, each part's '2021'!P. "Subset1 Description" in G is the sheet's own typo.
-  sets: { label: "COST UPDATE 2021 for import 'relationship'!A2:AA", cols: {
+  sets: { label: "COST UPDATE 2021 for import 'relationship'!A2:AA", headRow: 2, cols: {
     ean: [0, 'EAN13'], part1: [2, 'Subset1 Description'], cost1: [3, 'Cost subset1'], part2: [4, 'Subset2 Description'], cost2: [5, 'Cost subset2'],
     part3: [6, ['Subset1 Description', 'Subset3 Description']], cost3: [7, 'Cost subset3'], part4: [8, 'Subset4 Description'], cost4: [9, 'Cost subset4'],
     total: [10, 'Total Set Cost'], ean2: [26, 'EAN13'] } },
@@ -426,6 +426,9 @@ const MASTER_GP_BLOCKS = [
 const SMG_MAKES = ['EVE', 'EVERCOOK', 'EXCEL'];
 const colName = (i) => (i >= 26 ? String.fromCharCode(64 + Math.floor(i / 26)) : '') + String.fromCharCode(65 + (i % 26));
 const normHead = (s) => String(s || '').replace(/\s+/g, ' ').trim().toUpperCase();
+// What a header check found. A number means the header row moved and that cell may be a cost: never quoted
+// (the message goes to the import log, the owners' email and LINE).
+const foundText = (head, i) => { const v = cell(head, i); return !v ? 'ช่องว่าง' : toNum(v) !== null ? 'ตัวเลข (หัวตารางอาจเลื่อนแถว)' : `"${v.slice(0, 60)}"`; };
 
 function smgRows(sheets, name) {
   const spec = SMG_SHEETS[name];
@@ -433,10 +436,10 @@ function smgRows(sheets, name) {
   if (!Array.isArray(values) || values.length < 2) throw new UserError(`ไม่มีข้อมูลจาก ${spec.label}`);
   const head = values[0] || [];
   const wrong = Object.values(spec.cols).filter(([i, h]) => ![].concat(h).some((x) => normHead(head[i]) === normHead(x)))
-    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ "${cell(head, i)}"`);
+    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ ${foundText(head, i)}`);
   if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับที่ระบบรู้จัก — ${wrong.join('; ')}`);
-  return values.slice(1).map((r) => {
-    const o = { _row: r || [] };
+  return values.slice(1).map((r, n) => {
+    const o = { _row: r || [], _n: (spec.headRow || 1) + 1 + n };   // _n: row number in the sheet
     for (const [k, [i]] of Object.entries(spec.cols)) o[k] = cell(r, i);
     return o;
   });
@@ -449,7 +452,7 @@ function masterGpColumns(sheets) {
   for (const block of MASTER_GP_BLOCKS) {
     if (!Object.values(block).some(([i]) => cell(head, i))) continue;
     const wrong = Object.values(block).filter(([i, h]) => normHead(head[i]) !== normHead(h))
-      .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${h}" แต่พบ "${cell(head, i)}"`);
+      .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${h}" แต่พบ ${foundText(head, i)}`);
     if (wrong.length) throw new UserError(`หัวตารางของ ${SMG_SHEETS.master.label} ไม่ตรงกับที่ระบบรู้จัก — ${wrong.join('; ')}`);
     Object.assign(cols, block);
   }
@@ -477,6 +480,7 @@ function wholesalePrices(sheets) {
       if (w.net !== null) { if (r.wholesaleDuplicates.length < 50) r.wholesaleDuplicates.push(row.ean); continue; }
       w.net = net;
       w.label = row.desc.slice(0, 120);
+      w.row = row._n;
     } else if (w.options.length < 10) {
       w.options.push({ label: row.desc.slice(0, 120), net });
     }
@@ -538,7 +542,11 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
   const gpRateMax = loadGpConfig().rateMax;
   const wholesale = wholesalePrices(sheets);
   const report = { costRows: 0, notForSale: 0, blankSaleStatus: 0, duplicateBarcodes: [], badBarcodes: 0,
-    gpColumns: Object.keys(gpCols), gpRated: 0, gpBadRates: [] };
+    gpColumns: Object.keys(gpCols), gpRated: 0, gpBadRates: [],
+    // rows read per tab (null = tab not sent), for the data sources page
+    sheetRows: { cost: costRows.length, pricelist: plRows.length, master: masterRows.length, hot: hotRows.length,
+      sets: Array.isArray(sheets.sets) ? Math.max(sheets.sets.length - 1, 0) : null,
+      wholesale: Array.isArray(sheets.wholesale) ? Math.max(sheets.wholesale.length - 1, 0) : null } };
 
   const first = (rows, keep) => {
     const m = new Map();
@@ -601,7 +609,7 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
       key, name: (n && n.name) || (m && m.name) || (h && h.name) || key, barcode: ean,
       make: ((n && n.brand) || (m && m.brand) || 'EVE').toUpperCase(), category: (m && m.group) || (n && n.category) || '',
       status: n ? n.status.toUpperCase() : '', saleChannel: h ? h.saleCh : '', priceCat: n ? n.priceCat.toUpperCase() : '',
-      listPrice: n ? price(n.normal) : null, cost: unitCost, fromSet, normalPrice: base, tiers, gpRates,
+      listPrice: n ? price(n.normal) : null, cost: unitCost, fromSet, normalPrice: base, tiers, gpRates, masterRow: m ? m._n : null,
       wholesale: wholesale.byEan.get(ean) || null
     });
   }
@@ -612,15 +620,16 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
     for (const p of products) {
       await c.query(
         `insert into products (price_list_id, brand, key, name, cost, normal_price, source, barcode, make, category, status, sale_channel,
-           price_cat, list_price, price_gt, price_dgt, price_bt, gp_rates, wholesale, tiered, updated_at)
-         values ($1, 'EVE', $2, $3, $4, $5, 'SMG', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, true, now())
+           price_cat, list_price, price_gt, price_dgt, price_bt, gp_rates, wholesale, master_row, tiered, updated_at)
+         values ($1, 'EVE', $2, $3, $4, $5, 'SMG', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, true, now())
          on conflict (price_list_id, brand, key_norm) do update set name = excluded.name, cost = excluded.cost, normal_price = excluded.normal_price,
            source = 'SMG', barcode = excluded.barcode, make = excluded.make, category = excluded.category, status = excluded.status,
            sale_channel = excluded.sale_channel, price_cat = excluded.price_cat, list_price = excluded.list_price, price_gt = excluded.price_gt,
            price_dgt = excluded.price_dgt, price_bt = excluded.price_bt, gp_rates = excluded.gp_rates, wholesale = excluded.wholesale,
+           master_row = excluded.master_row,
            tiered = true, updated_at = now()`,
         [pl2.id, p.key, p.name, p.cost, p.normalPrice, p.barcode, p.make, p.category, p.status, p.saleChannel, p.priceCat, p.listPrice,
-          p.tiers.GT, p.tiers.DGT, p.tiers.BT, p.gpRates, p.wholesale]);
+          p.tiers.GT, p.tiers.DGT, p.tiers.BT, p.gpRates, p.wholesale, p.masterRow]);
     }
     return pl2;
   });
@@ -658,14 +667,14 @@ const MAPPING_SHEETS = {
     code: [0, 'รหัสเงื่อนไข (Term code)'], name: [1, 'ชื่อเงื่อนไข'], nameEn: [2, 'Name (EN)'], category: [3, 'หมวด'], method: [4, 'วิธีคำนวณ'],
     basis: [5, 'ฐานที่ใช้คิด'], borneBy: [6, 'ผู้รับภาระ'], onInvoice: [7, 'หักในใบกำกับภาษี?'], inMuNet: [8, 'นับรวมในราคาสุทธิเพื่อคิด %MU?'],
     reference: [9, 'ค่าอ้างอิงที่พบ'], source: [10, 'ที่มา'] } },
-  groups: { label: "'Customer Groups'!A1:H", cols: {
+  groups: { label: "'Customer Groups'!A1:I", cols: {
     code: [0, 'รหัสกลุ่ม'], name: [1, 'ชื่อกลุ่มลูกค้า'], tier: [2, 'ราคาฐาน (Price tier)'], credit: [3, 'เครดิตเทอม (วัน)'], approver: [6, 'ผู้อนุมัติ'], note: [7, 'หมายเหตุ'] } },
   groupTerms: { label: "'Group Terms'!A1:K", cols: {
     owner: [0, 'รหัสกลุ่ม หรือรหัสลูกค้า'], seq: [1, 'ลำดับการหัก'], term: [2, 'รหัสเงื่อนไข'], pct: [5, 'ค่า (%)'], thb: [6, 'ค่า (บาท)'],
     scope: [7, 'ใช้กับสินค้า (ALL หรือบาร์โค้ด)'], from: [8, 'มีผลตั้งแต่'], to: [9, 'สิ้นสุด'], note: [10, 'หมายเหตุ / ที่มา'] } },
   channels: { label: "'Channel Map'!A1:B", cols: { channel: [0, 'ช่องทาง SAP'], group: [1, 'กลุ่มลูกค้าเริ่มต้น'] } },
   customerMap: { label: "'Customer Map'!A1:D", cols: { code: [0, 'รหัสลูกค้า (SAP)'], group: [3, 'กลุ่มลูกค้า (แทนกลุ่มของช่องทาง)'] } },
-  customers: { label: "'Active Customers'!A6:H", cols: {
+  customers: { label: "'Active Customers'!A6:H", headRow: 6, cols: {
     code: [0, 'รหัสลูกค้า'], name: [1, 'ชื่อลูกค้า'], channel: [2, 'ช่องทาง SAP'], employee: [3, 'พนักงานขาย'], last: [7, 'ซื้อล่าสุด'] } }
 };
 const PRICE_TIER_CODES = ['GT', 'DGT', 'BT', 'NTW', 'FOSTER', 'JS'];
@@ -676,10 +685,10 @@ function mappingRows(sheets, name) {
   if (!Array.isArray(values) || !values.length) throw new UserError(`ไม่มีข้อมูลจาก ${spec.label}`);
   const head = values[0] || [];
   const wrong = Object.values(spec.cols).filter(([i, h]) => ![].concat(h).some((x) => normHead(head[i]) === normHead(x)))
-    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ "${cell(head, i)}"`);
+    .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ ${foundText(head, i)}`);
   if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับแม่แบบ — ${wrong.join('; ')}`);
-  return values.slice(1).map((r) => {
-    const o = { _row: r || [] };
+  return values.slice(1).map((r, n) => {
+    const o = { _row: r || [], _n: (spec.headRow || 1) + 1 + n };
     for (const [k, [i]] of Object.entries(spec.cols)) o[k] = cell(r, i);
     return o;
   });
@@ -712,7 +721,7 @@ async function importCustomerPricing(db, sheets) {
     let gpTier = gpTierCol >= 0 ? upper(cell(r._row, gpTierCol)) : '';
     if (gpTier && !gpTiers.has(gpTier)) { errors.push(`Customer Groups แถว ${i + 2}: ${code} GP Tier "${gpTier}" ไม่ถูกต้อง (ใช้ได้: ${[...gpTiers.keys()].join(', ')})`); gpTier = ''; }
     const credit = toNum(r.credit);
-    if (!groups.has(code)) groups.set(code, Object.assign({}, r, { code, tier, gpTier, credit: credit === null ? null : Math.round(credit) }));
+    if (!groups.has(code)) groups.set(code, Object.assign({}, r, { code, tier, gpTier, credit: credit === null ? null : Math.round(credit), sourceRow: r._n }));
   });
   const groupTerms = [];
   mappingRows(sheets, 'groupTerms').forEach((r, i) => {
@@ -728,7 +737,7 @@ async function importCustomerPricing(db, sheets) {
     const from = r.from ? parseSheetDate(r.from) : null;
     const to = r.to ? parseSheetDate(r.to) : null;
     if ((r.from && !from) || (r.to && !to)) { errors.push(`${at}: วันที่ไม่ถูกต้อง`); return; }
-    groupTerms.push({ owner, seq: Math.round(toNum(r.seq) || 0), term: term.code, pct, thb, scope: (r.scope || 'ALL').trim().slice(0, 200), from, to, note: r.note });
+    groupTerms.push({ owner, seq: Math.round(toNum(r.seq) || 0), term: term.code, pct, thb, scope: (r.scope || 'ALL').trim().slice(0, 200), from, to, note: r.note, sourceRow: r._n });
   });
   const channels = new Map();
   mappingRows(sheets, 'channels').forEach((r) => { if (r.channel) channels.set(r.channel, upper(r.group)); });
@@ -754,12 +763,12 @@ async function importCustomerPricing(db, sheets) {
       [t.code, t.name, t.nameEn, t.category, t.method, t.basis, t.borneBy, t.onInvoice, t.inMuNet, t.reference, t.source]);
     }
     for (const g of groups.values()) {
-      await c.query('insert into customer_groups (code, name, price_tier, gp_tier, credit_days, approver, note) values ($1, $2, $3, $4, $5, $6, $7)',
-        [g.code, g.name, g.tier, g.gpTier, g.credit, g.approver, g.note]);
+      await c.query('insert into customer_groups (code, name, price_tier, gp_tier, credit_days, approver, note, source_row) values ($1, $2, $3, $4, $5, $6, $7, $8)',
+        [g.code, g.name, g.tier, g.gpTier, g.credit, g.approver, g.note, g.sourceRow]);
     }
     for (const t of groupTerms) {
-      await c.query(`insert into group_terms (owner_code, seq, term_code, pct, thb, scope, valid_from, valid_to, note)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [t.owner, t.seq, t.term, t.pct, t.thb, t.scope, t.from, t.to, t.note]);
+      await c.query(`insert into group_terms (owner_code, seq, term_code, pct, thb, scope, valid_from, valid_to, note, source_row)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, [t.owner, t.seq, t.term, t.pct, t.thb, t.scope, t.from, t.to, t.note, t.sourceRow]);
     }
     for (const [ch, g] of channels) await c.query('insert into sap_channel_groups (sap_channel, group_code) values ($1, $2)', [ch, g]);
     for (const r of customers.values()) {
@@ -769,7 +778,8 @@ async function importCustomerPricing(db, sheets) {
   });
   return {
     imported: customers.size, terms: terms.size, groups: groups.size, groupTerms: groupTerms.length, channels: channels.size,
-    overrides: overrides.size, errors: errors.slice(0, 100), errorCount: errors.length
+    overrides: overrides.size, errors: errors.slice(0, 100), errorCount: errors.length,
+    sheetRows: Object.fromEntries(Object.keys(MAPPING_SHEETS).map((k) => [k, Array.isArray(sheets[k]) ? Math.max(sheets[k].length - 1, 0) : null]))
   };
 }
 
@@ -797,4 +807,4 @@ async function importData(db, { type, values, sheets, brand, group, today, price
   }
 }
 
-module.exports = { importData, parseCsv, parseSheetDate, toNum, LEGACY_TYPES: Object.keys(LEGACY) };
+module.exports = { importData, parseCsv, parseSheetDate, toNum, LEGACY_TYPES: Object.keys(LEGACY), SMG_SHEETS, MASTER_GP_BLOCKS, MAPPING_SHEETS, colName };

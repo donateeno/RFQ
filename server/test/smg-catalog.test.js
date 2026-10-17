@@ -267,7 +267,7 @@ test('per-item GP rates from SMG MASTER and NON PC wholesale prices are stored w
     where l.name = 'OCT26-JAN27' and p.barcode = $1`, [ean])).rows[0];
   const a = await stored(EAN.A);
   assert.deepEqual(a.gp_rates, { SCGH: 0.2, T15: 0.15, T18: 0.18, T20: 0.2, T24: 0.24, BT_GP: 0.15, BT_MKT: 0.05, BT_DC: 0.0504, DST1: 0.33 });
-  assert.deepEqual(a.wholesale, { net: 501.5, label: 'ราคาส่ง', options: [{ label: 'ซื้อ 12 ชิ้นขึ้นไป', net: 480 }] });
+  assert.deepEqual(a.wholesale, { net: 501.5, label: 'ราคาส่ง', row: 2, options: [{ label: 'ซื้อ 12 ชิ้นขึ้นไป', net: 480 }] });
   assert.deepEqual((await stored(EAN.D)).gp_rates, { T20: 0.25, T24: 0.6 });
   assert.equal((await stored(EAN.F)).gp_rates, null);
   assert.equal((await stored(EAN.C)).gp_rates, null);
@@ -296,4 +296,115 @@ test('per-item GP rates from SMG MASTER and NON PC wholesale prices are stored w
 test('sync now: admin only, needs SYNC_WEBHOOK_URL', async () => {
   await assert.rejects(sup.call('requestCatalogSync'), /ไม่มีสิทธิ์/);
   await assert.rejects(owner.call('requestCatalogSync'), /SYNC_WEBHOOK_URL/);
+});
+
+// ------------------------------------------------------------- data sources page and alerts (owner only)
+
+const FILE_ID = { cost: '1CostFileId_abcdefghijklmnop', nationwide: '1NationwideId_abcdefghijklmn', master: '1MasterFileId_abcdefghijklmno' };
+const syncWith = (body, meta) => fetch(env.base + '/api/integrations/import/smg_catalog?priceList=OCT26-JAN27', {
+  method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-token' }, body: JSON.stringify(Object.assign({ sheets: body }, meta))
+}).then(async (r) => ({ status: r.status, body: await r.json() }));
+const alerts = () => env.mail.filter((m) => m.event === 'source.alert');
+
+test('data sources: every file, tab, range and column; links from n8n; missing optional tabs are alerted by email and LINE', async () => {
+  await assert.rejects(sup.call('getDataSources'), /เฉพาะเจ้าของระบบ/);
+  env.mail.length = 0;
+  await env.db.query(`delete from audit_log where action = 'ALERT'`);   // earlier syncs in this file already alerted
+  const s = sheets();
+  s.sets = [setHead];
+  const r = await syncWith(s, { files: { cost: FILE_ID.cost, nationwide: FILE_ID.nationwide, master: { id: FILE_ID.master, name: 'SMG MASTER OCT26-JAN27' }, evil: 'x' },
+    missing: ['wholesale', 'nope'] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+
+  const d = await owner.call('getDataSources');
+  const file = (k) => d.files.find((f) => f.key === k);
+  assert.equal(file('cost').url, `https://docs.google.com/spreadsheets/d/${FILE_ID.cost}/edit`);
+  assert.equal(file('master').name, 'SMG MASTER OCT26-JAN27');
+  assert.equal(file('mapping').url, '', 'not synced yet');
+  const tab = (k) => d.files.flatMap((f) => f.tabs).find((t) => t.key === k);
+  assert.deepEqual([tab('cost').range, tab('cost').state, tab('cost').rows], ["'2021'!A3:AQ", 'ok', 9]);
+  assert.deepEqual(tab('cost').columns.find((c) => c.col === 'P'), { col: 'P', header: 'ราคาต้นทุนนำเข้า/หน่วย', use: 'ต้นทุนต่อหน่วย (เห็นเฉพาะผู้ดูต้นทุน)' });
+  assert.ok(tab('master').columns.some((c) => c.col === 'M' && c.header === 'ส่วนลดT18'), 'GP columns listed');
+  assert.equal(tab('master').range, "'MASTER'!A1:Y");
+  assert.equal(tab('wholesale').state, 'missing');
+  assert.equal(tab('sets').state, 'empty');
+  assert.equal(tab('terms').state, 'never');
+  assert.ok(!JSON.stringify(d).includes('9,000') && !JSON.stringify(d).includes('9000'), 'no cost values');
+
+  const sent = alerts();
+  assert.equal(sent.length, 2, sent.map((m) => m.subject).join('|'));
+  assert.ok(sent.some((m) => /ไม่ได้รับแท็บ WHOLESALE จากไฟล์ COST UPDATE 2021 for import/.test(m.subject)));
+  assert.ok(sent.some((m) => /แท็บ relationship ของไฟล์ COST UPDATE 2021 for import ไม่มีข้อมูล/.test(m.subject)));
+  assert.deepEqual(sent[0].to, ['akrawat@eve.co.th']);
+  assert.deepEqual(sent[0].line, ['U0123456789abcdef0123456789abcdef'], 'invalid LINE IDs in ALERT_LINE_TO are dropped');
+  assert.match(sent[0].text, /#sources/);
+  assert.equal((await owner.call('getBootstrap')).alerts.length, 2, 'banner for the owner');
+  assert.ok(!('alerts' in (await sup.call('getBootstrap'))));
+
+  await syncWith(s, { missing: ['wholesale'] });
+  assert.equal(alerts().length, 2, 'the same problem is not sent again within 24 hours');
+
+  const bad = sheets();
+  bad.pricelist = bad.pricelist.map((row, i) => (i === 0 ? row.map((h) => (h === 'PROMOTION' ? 'PROMO' : h)) : row));
+  assert.equal((await syncWith(bad, {})).status, 400);
+  const failed = alerts().filter((m) => /ซิงค์ไม่สำเร็จ/.test(m.subject));
+  assert.equal(failed.length, 1);
+  assert.match(failed[0].text, /PROMOTION/);
+  assert.equal((await owner.call('getDataSources')).types.find((t) => t.type === 'smg_catalog').failed, true);
+
+  // header row moved down by one: the check must not quote the data cell it finds (column P is cost)
+  const shifted = sheets();
+  shifted.cost = shifted.cost.slice(1);
+  const moved = await syncWith(shifted, {});
+  assert.equal(moved.status, 400);
+  assert.match(moved.body.error, /คอลัมน์ P ต้องเป็น "ราคาต้นทุนนำเข้า\/หน่วย" แต่พบ ตัวเลข/);
+  assert.ok(!/1,000|9,999/.test(moved.body.error) && !alerts().some((m) => /1,000|9,999/.test(m.subject + m.text + m.html)), 'no cost in the error or the alerts');
+
+  const ok = Object.assign(sheets(), { sets: [setHead, setRow(SET.ok, [['HOB-ALPHA', '1,000.00'], ['HOOD-DELTA', '5,000.00']], '6,000.00')], wholesale: [whHead, wh('TRUE', EAN.A, 'ราคาส่ง', '501.50')] });
+  assert.equal((await syncWith(ok, { files: { cost: FILE_ID.cost } })).status, 200);
+  const healthy = await owner.call('getDataSources');
+  assert.deepEqual(healthy.problems.filter((p) => !/ราคาตามลูกค้า/.test(p)), [], 'all SMG tabs fine again');
+  assert.equal(healthy.files.find((f) => f.key === 'cost').url, `https://docs.google.com/spreadsheets/d/${FILE_ID.cost}/edit`);
+});
+
+test('no successful sync for SYNC_STALE_HOURS: the hourly check alerts once', async () => {
+  const { checkAndAlert } = require('../src/rfq/sources');
+  env.mail.length = 0;
+  await env.db.query(`update audit_log set at = now() - interval '30 hours' where action in ('IMPORT', 'IMPORT_FAILED')`);
+  await env.db.query(`delete from audit_log where action = 'ALERT'`);
+  const notify = (m) => env.mail.push(m);
+  const found = await checkAndAlert(env.db, env.cfg, notify, 26);
+  assert.ok(found.some((p) => /ซิงค์ราคา SMG: ไม่มีการซิงค์สำเร็จเกิน 26 ชั่วโมง/.test(p.text)), found.map((p) => p.text).join('|'));
+  const n = alerts().length;
+  await checkAndAlert(env.db, env.cfg, notify, 26);
+  assert.equal(alerts().length, n, 'once a day');
+  assert.equal((await checkAndAlert(env.db, env.cfg, notify, 48)).filter((p) => /SMG: ไม่มีการซิงค์/.test(p.text)).length, 0, 'threshold from the setting');
+});
+
+test('GP per item: the exact MASTER and WHOLESALE cells, for the owner and users granted ตาราง GP', async () => {
+  const s = sheets();
+  s.master = s.master.map((r, i) => (i === 0 ? gpHead : r[0] === EAN.A ? withGp(r, { 12: '18%', 24: '33%' }) : withGp(r, {})));
+  s.wholesale = [whHead, wh('FALSE', EAN.A, 'ซื้อ 12 ชิ้น', '480.00'), wh('TRUE', EAN.A, 'ราคาส่ง', '501.50')];
+  assert.equal((await sync(s)).status, 200);
+  await assert.rejects(sales.call('getGpItem', 'HOB-ALPHA'), /เมนูนี้ถูกปิด/);
+  const it = await owner.call('getGpItem', EAN.A);
+  assert.equal(it.key, 'HOB-ALPHA');
+  assert.equal(it.masterRow, 3, 'HOB ALPHA is on MASTER row 3');
+  assert.deepEqual(it.rates.find((x) => x.rate === 'T18'), { rate: 'T18', col: 'M', header: 'ส่วนลดT18', value: 0.18, cell: 'SMG MASTER OCT26-JAN27 › MASTER!M3' });
+  assert.equal(it.rates.find((x) => x.rate === 'T15').value, null);
+  assert.deepEqual([it.wholesale.net, it.wholesale.cell], [501.5, 'COST UPDATE 2021 for import › WHOLESALE!M3']);
+  assert.ok(!('cost' in it) && !/"cost"/.test(JSON.stringify(it)));
+  await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', grantedMenus: ['gptable', 'users'] });
+  assert.deepEqual((await sales.call('getBootstrap')).user.openMenus, [], 'the menu alone is not enough: ตาราง GP also needs the GP permission');
+  await assert.rejects(sales.call('getGpItem', 'HOB-ALPHA'), /เมนูนี้ถูกปิด/);
+  assert.deepEqual((await owner.call('listUsers')).users.find((u) => u.email === 'sales1@eve.co.th').grantedMenus, ['gptable'], 'only opt-in menus can be granted');
+  await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', canViewGp: true });
+  assert.deepEqual((await sales.call('getBootstrap')).user.openMenus, ['gptable']);
+  const asSales = await sales.call('getGpItem', 'HOB-ALPHA');
+  assert.equal(asSales.rates.find((x) => x.rate === 'DST1').value, 0.33);
+  const noCost = (o) => !/"(cost|gain|mu|unitCost)"\s*:/.test(JSON.stringify(o)) && !/1,?000(\.0+)?\b/.test(JSON.stringify(o));
+  assert.ok(noCost(asSales) && noCost(await sales.call('getGpTable')), 'a granted sales user gets no cost from the GP table or lookup');
+  await assert.rejects(sales.call('getDataSources'), /เฉพาะเจ้าของระบบ/);
+  await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', grantedMenus: [], canViewGp: false });
+  await assert.rejects(sales.call('getGpTable'), /เมนูนี้ถูกปิด/);
 });

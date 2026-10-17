@@ -28,6 +28,27 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ ($json.body.to || []).length }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "8d3f2e4a-1b6c-5d7e-9f80-6c5b4a3d2e03",
+      "name": "Has email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        240,
+        -100
+      ]
+    },
+    {
+      "parameters": {
         "sendTo": "={{ $json.body.to.join(',') }}",
         "subject": "={{ $json.body.subject }}",
         "emailType": "html",
@@ -41,13 +62,60 @@
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.1,
       "position": [
-        260,
-        0
+        480,
+        -100
       ],
       "credentials": {
         "gmailOAuth2": {
           "id": "REPLACE",
           "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ ($json.body.line || []).length }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "9e4f3a5b-2c7d-5e8f-a091-7d6c5b4e3f04",
+      "name": "Has LINE?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        240,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/multicast",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.body.line, messages: [{ type: 'text', text: String($json.body.text || $json.body.subject).slice(0, 4900) }] }) }}",
+        "options": {}
+      },
+      "id": "af5a4b6c-3d8e-5f90-b1a2-8e7d6c5f4a05",
+      "name": "Send LINE",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        120
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "LINE channel access token"
         }
       }
     }
@@ -57,7 +125,34 @@
       "main": [
         [
           {
+            "node": "Has email?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Has LINE?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has email?": {
+      "main": [
+        [
+          {
             "node": "Send email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has LINE?": {
+      "main": [
+        [
+          {
+            "node": "Send LINE",
             "type": "main",
             "index": 0
           }
@@ -75,5 +170,5 @@
   "tags": [],
   "staticData": null,
   "versionId": "6c7bc0cd-5248-4aa0-bae7-effde44815bd",
-  "_comment": "App POSTs {event,to[],subject,html}. Credential 'RFQ integration token' = Header Auth, name Authorization, value 'Bearer <INTEGRATION_TOKEN>'. Production URL → NOTIFY_WEBHOOK_URL."
+  "_comment": "App POSTs {event,to[],subject,html,line?,text?}. Email goes to `to`; when `line` (LINE user IDs, from ALERT_LINE_TO) is set, `text` also goes out through the LINE Messaging API (multicast). Credentials: 'RFQ integration token' = Header Auth, name Authorization, value 'Bearer <INTEGRATION_TOKEN>'; 'LINE channel access token' = Header Auth, name Authorization, value 'Bearer <channel access token of the LINE Official Account>'. Production URL → NOTIFY_WEBHOOK_URL."
 }

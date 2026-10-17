@@ -10,6 +10,8 @@ const { UserError } = require('./pricing');
 const service = require('./rfq/service');
 const { importData } = require('./rfq/importers');
 const { createNotifier } = require('./rfq/notifications');
+const { checkAndAlert, cleanSyncMeta } = require('./rfq/sources');
+const { getSettings } = require('./rfq/catalog');
 
 const PUBLIC = path.join(__dirname, '..', 'public');
 
@@ -63,12 +65,13 @@ function createApp(deps) {
   async function sessionUser(req) {
     const email = req.session && req.session.email;
     if (!email) return null;
-    const u = (await db.query('select email, name, role, active, can_view_cost, can_view_gp, hidden_menus from users where email = $1', [email])).rows[0];
+    const u = (await db.query('select email, name, role, active, can_view_cost, can_view_gp, hidden_menus, granted_menus from users where email = $1', [email])).rows[0];
     if (!u || !u.active) { req.session = null; return null; }
     const isOwner = cfg.owners.includes(u.email);
     return {
       email: u.email, name: u.name, role: u.role, canSeeCost: u.can_view_cost === true, isOwner,
-      canSeeGp: isOwner || u.can_view_cost === true || u.can_view_gp === true, hiddenMenus: isOwner ? [] : u.hidden_menus || []
+      canSeeGp: isOwner || u.can_view_cost === true || u.can_view_gp === true, hiddenMenus: isOwner ? [] : u.hidden_menus || [],
+      grantedMenus: u.granted_menus || []
     };
   }
 
@@ -147,7 +150,11 @@ function createApp(deps) {
     if (!cfg.integrationToken || auth !== 'Bearer ' + cfg.integrationToken) return res.status(401).json({ ok: false, error: 'unauthorized' });
     next();
   });
+  // After every n8n import: alert the owners (email + LINE) about failed, missing or empty sources. Never fails the request.
+  const alertSources = () => getSettings(db).then((s) => checkAndAlert(db, cfg, notify, s.SYNC_STALE_HOURS))
+    .catch((e) => logger.error(`[alerts] ${e.message}`));
   integration.post('/import/:type', async (req, res) => {
+    const meta = cleanSyncMeta(req.body);   // spreadsheet IDs and tabs n8n could not read (sources page, alerts)
     try {
       const out = await importData(db, {
         type: req.params.type, values: req.body && req.body.values, sheets: req.body && req.body.sheets, brand: req.query.brand, group: req.query.group,
@@ -155,13 +162,15 @@ function createApp(deps) {
         priceList: req.query.priceList ? { name: String(req.query.priceList), effectiveFrom: req.query.effectiveFrom } : null
       });
       await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT', $1)`,
-        [JSON.stringify({ type: req.params.type, ...out, errors: (out.errors || []).slice(0, 20) })]);
+        [JSON.stringify({ type: req.params.type, ...out, errors: (out.errors || []).slice(0, 20), ...meta })]);
+      await alertSources();
       res.json({ ok: true, data: out });
     } catch (e) {
-      if (e instanceof UserError) {
-        await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT_FAILED', $1)`,
-          [JSON.stringify({ type: req.params.type, priceList: req.query.priceList || '', error: e.message })]).catch(() => {});
-      }
+      // Every failure is logged and alerted; an unexpected error gets a generic text (its details stay in the server log).
+      const error = e instanceof UserError ? e.message : 'เกิดข้อผิดพลาดในระบบระหว่างนำเข้า (ดูรายละเอียดใน log ของเซิร์ฟเวอร์)';
+      await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT_FAILED', $1)`,
+        [JSON.stringify({ type: req.params.type, priceList: req.query.priceList || '', error, ...meta })]).catch(() => {});
+      await alertSources();
       sendError(res, e, logger);
     }
   });
