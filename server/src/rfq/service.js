@@ -483,8 +483,11 @@ async function customerPriceCheck(ctx, payload) {
       tierTerms = gpTierTerms(use, rated && rated.gp_rates);
       const missing = tierTerms.filter((t) => t.defaulted);
       if (missing.length) flags.push(`ไม่มี GP รายสินค้าใน SMG MASTER (${missing.map((t) => t.code).join(', ')}) — ใช้ค่าเริ่มต้นของ Tier`);
-      const zero = tierTerms.filter((t) => !t.defaulted && t.pct === 0 && t.code !== 'BT_MKT' && t.code !== 'BT_DC');
-      if (zero.length) flags.push(`SMG MASTER ไม่ให้ส่วนลด ${zero.map((t) => t.code).join(', ')} สำหรับสินค้านี้ — อาจยกเลิก ไม่มีสต็อก หรือไม่ขายในช่องทางนี้ ตรวจสอบก่อนเสนอราคา`);
+      // Owner's reading of a 0% cell (price-groups.json marks fee steps, where 0% is normal). Tier codes only for GP viewers.
+      const zero = tierTerms.filter((t) => !t.defaulted && !t.fee && t.pct === 0);
+      if (zero.length) {
+        flags.push(`SMG MASTER ไม่ให้ส่วนลด${ctx.user.canSeeGp === true ? ' ' + zero.map((t) => t.code).join(', ') : ''}สำหรับสินค้านี้ — อาจยกเลิก ไม่มีสต็อก หรือไม่ขายในช่องทางนี้ ตรวจสอบก่อนเสนอราคา`);
+      }
     }
   }
   const replaced = new Set(((gpTier && gpTierDefs().get(gpTier.used)) || {}).replacesTerms || []);
@@ -925,6 +928,7 @@ async function saveUser(ctx, u) {
   if (!ROLES.includes(role)) throw new UserError('Role ไม่ถูกต้อง');
   const active = u.active !== false;
   if (email === me.email && (role !== 'ADMIN' || !active)) throw new UserError('ไม่สามารถลดสิทธิ์หรือปิดบัญชีของตัวเองได้');
+  if (ctx.cfg.owners.includes(email) && (role !== 'ADMIN' || !active)) throw new UserError('เจ้าของระบบต้องเป็น ADMIN และใช้งานอยู่ (เปลี่ยนได้ที่ OWNERS บนเซิร์ฟเวอร์)');
   // Left out = unchanged. Cost is never set here (COST_VIEWERS on the server only).
   const canViewGp = u.canViewGp === undefined ? null : u.canViewGp === true;
   const hidden = u.hiddenMenus === undefined ? null : [...new Set([].concat(u.hiddenMenus || []).map(String))].filter((m) => MENU_IDS.includes(m));

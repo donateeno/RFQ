@@ -85,6 +85,7 @@ function validatePriceGroups(raw) {
     (t.steps || []).forEach((s) => {
       if (!GP_RATE_KEYS.includes(s.rate)) errors.push(`gpTiers ${t.code}: rate must be one of ${GP_RATE_KEYS}`);
       if (!s.label || typeof s.default !== 'number' || s.default < 0 || s.default >= 1) errors.push(`gpTiers ${t.code}: bad step ${JSON.stringify(s)}`);
+      if (s.fee !== undefined && typeof s.fee !== 'boolean') errors.push(`gpTiers ${t.code}: fee must be true or false`);
     });
   });
   (raw.gpTiers || []).forEach((t) => {

@@ -1451,7 +1451,7 @@
         $$('[data-menu]', tr).forEach(function (x) { if (!x.checked && !x.disabled) hidden.push(x.getAttribute('data-menu')); });
         b.disabled = true;
         run('saveUser', { email: u.email, name: u.name, role: role, active: tr.querySelector('[data-f="active"]').checked,
-          canViewGp: tr.querySelector('[data-f="gp"]').checked, hiddenMenus: hidden })
+          canViewGp: tr.querySelector('[data-f="gp"]').disabled ? undefined : tr.querySelector('[data-f="gp"]').checked, hiddenMenus: hidden })
           .then(function (x) { toast('บันทึก ' + u.email + ' แล้ว'); renderUsers(x); }).catch(function (e) { b.disabled = false; fail(e); });
       });
     });

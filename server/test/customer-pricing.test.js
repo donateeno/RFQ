@@ -56,6 +56,7 @@ const sync = (body) => fetch(env.base + '/api/integrations/import/customer_prici
 const price = (c, p) => c.call('customerPriceCheck', p);
 // Step values (GP %, amounts) need the GP permission; the owner always has it.
 const priceGp = (p) => price(owner, p);
+const admin2Client = () => env.client('admin2@eve.co.th').login();
 
 test('import the Customer Price Mapping sheet; unusable rows are listed, not loaded', async () => {
   const r = await sync(sheets());
@@ -219,10 +220,21 @@ test('GP % is for the owner and the users the owner grants it to; sales and supe
   assert.equal(zero.rowCount, 1);
   const z = await price(sales, q);
   assert.equal(z.net, 29990);
-  assert.ok(z.flags.some((f) => /ไม่ให้ส่วนลด T18.*อาจยกเลิก ไม่มีสต็อก/.test(f)), z.flags.join('|'));
+  assert.ok(z.flags.some((f) => /^SMG MASTER ไม่ให้ส่วนลดสำหรับสินค้านี้ — อาจยกเลิก ไม่มีสต็อก/.test(f)), z.flags.join('|'));
+  assert.ok(!z.flags.some((f) => /T18/.test(f)), 'no tier codes for users without GP');
+  assert.ok((await price(owner, q)).flags.some((f) => /ไม่ให้ส่วนลด T18 ?สำหรับ/.test(f)));
+  await env.db.query(`update products set gp_rates = gp_rates || '{"BT_MKT": 0, "BT_DC": 0}' where key = 'HOOD-GP'`);
+  assert.ok(!(await price(owner, { groupCode: 'BT', productKey: 'HOOD-GP' })).flags.some((f) => /ไม่ให้ส่วนลด/.test(f)), '0% fee steps are normal');
 });
 
 test('the owner can close menus per user; the server refuses their functions too', async () => {
+  await assert.rejects(owner.call('saveUser', { email: 'akrawat@eve.co.th', role: 'SALES' }), /ตัวเอง/);
+  await assert.rejects(admin2Client().then((c) => c.call('listUsers')), /เฉพาะเจ้าของระบบ/);
+  await owner.call('saveUser', { email: 'pak.m@eve.co.th', role: 'SUPERVISOR', canViewCost: true, can_view_cost: true });
+  assert.equal((await env.db.query(`select can_view_cost from users where email = 'pak.m@eve.co.th'`)).rows[0].can_view_cost, false, 'cost is never granted in the app');
+  const ownerB = { db: env.db, cfg: Object.assign({}, env.cfg, { owners: ['akrawat@eve.co.th', 'owner.b@eve.co.th'] }), user: { email: 'akrawat@eve.co.th', isOwner: true } };
+  await assert.rejects(require('../src/rfq/service').rpc.saveUser(ownerB, { email: 'owner.b@eve.co.th', role: 'SALES' }), /เจ้าของระบบต้องเป็น ADMIN/,
+    'one owner cannot demote another');
   const users = await owner.call('listUsers');
   assert.ok(users.menus.some((m) => m.id === 'custprice'));
   const me = users.users.find((u) => u.email === 'akrawat@eve.co.th');
