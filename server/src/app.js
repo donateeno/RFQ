@@ -166,11 +166,11 @@ function createApp(deps) {
       await alertSources();
       res.json({ ok: true, data: out });
     } catch (e) {
-      if (e instanceof UserError) {
-        await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT_FAILED', $1)`,
-          [JSON.stringify({ type: req.params.type, priceList: req.query.priceList || '', error: e.message, ...meta })]).catch(() => {});
-        await alertSources();
-      }
+      // Every failure is logged and alerted; an unexpected error gets a generic text (its details stay in the server log).
+      const error = e instanceof UserError ? e.message : 'เกิดข้อผิดพลาดในระบบระหว่างนำเข้า (ดูรายละเอียดใน log ของเซิร์ฟเวอร์)';
+      await db.query(`insert into audit_log (user_email, action, detail) values ('n8n', 'IMPORT_FAILED', $1)`,
+        [JSON.stringify({ type: req.params.type, priceList: req.query.priceList || '', error, ...meta })]).catch(() => {});
+      await alertSources();
       sendError(res, e, logger);
     }
   });
