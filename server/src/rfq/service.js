@@ -6,6 +6,8 @@
  * Visibility:  SALES       indicator only
  *              SUPERVISOR  + net prices and the MU band (e.g. "20–25%"), never cost/gain/exact %MU
  *              cost viewer + cost, gain, exact %MU   (users.can_view_cost, set from COST_VIEWERS env only)
+ *              GP %         customer price lookup steps (users.can_view_gp, granted by the owner; owners and cost viewers always)
+ * The owner (OWNERS env, default COST_VIEWERS) manages users and may hide side-menu items per user (MENUS).
  */
 const { calculate, resolveDiscounts, round, muBand, INDICATOR, PRICE_TIERS, applyTerms, gpTierTerms, UserError } = require('../pricing');
 const { tx } = require('../db');
@@ -33,6 +35,29 @@ function requireRole(user, roles) {
 }
 const approver = (ctx) => requireRole(ctx.user, ['SUPERVISOR', 'ADMIN']);
 const admin = (ctx) => requireRole(ctx.user, ['ADMIN']);
+function owner(ctx) {
+  if (!ctx.user.isOwner) throw new UserError('เฉพาะเจ้าของระบบ', 403);
+  return ctx.user;
+}
+
+/** Side-menu items the owner can close per user. An RPC is refused once every menu that uses it is closed. */
+const MENUS = [
+  { id: 'check', label: 'ตรวจราคาตามช่องทาง', rpc: ['priceCheck'] },
+  { id: 'custprice', label: 'ราคาตามลูกค้า', rpc: ['customerPriceCheck', 'searchCustomers'] },
+  { id: 'bundles', label: 'ชุดเซ็ต', rpc: ['createBundle', 'deleteBundle'] },
+  { id: 'new', label: 'ขออนุมัติราคา', rpc: ['submitRequest', 'priceCheck'] },
+  { id: 'mine', label: 'คำขอของฉัน', rpc: ['listMyRequests', 'cancelMyRequests'] },
+  { id: 'approved', label: 'ราคาที่อนุมัติแล้ว', rpc: ['searchApprovedPrices'] },
+  { id: 'approvals', label: 'รออนุมัติ', approver: true, rpc: ['decideRequests', 'listRequests', 'getLineContext'] },
+  { id: 'monitor', label: 'คำขอทั้งหมด', approver: true, rpc: ['listRequests', 'getLineContext'] },
+  { id: 'dashboard', label: 'ภาพรวม', approver: true, rpc: ['getDashboard'] }
+];
+const MENU_IDS = MENUS.map((m) => m.id);
+function menuGuard(user, fn) {
+  const hidden = user.hiddenMenus || [];
+  const menus = MENUS.filter((m) => m.rpc.includes(fn));
+  if (menus.length && menus.every((m) => hidden.includes(m.id))) throw new UserError('เมนูนี้ถูกปิดสำหรับบัญชีของคุณ', 403);
+}
 
 function todayIso(tz) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -225,7 +250,8 @@ async function getBootstrap(ctx) {
   });
   const customers = (await db.query(`select distinct customer from requests where customer <> '' order by customer limit 3000`)).rows.map((r) => r.customer);
   const out = {
-    user: { email: user.email, name: user.name, role: user.role, canApprove: user.role !== 'SALES', isAdmin: user.role === 'ADMIN', canSeeCost: canSeeCost(user) },
+    user: { email: user.email, name: user.name, role: user.role, canApprove: user.role !== 'SALES', isAdmin: user.role === 'ADMIN', canSeeCost: canSeeCost(user),
+      isOwner: user.isOwner === true, canSeeGp: user.canSeeGp === true, hiddenMenus: user.hiddenMenus || [] },
     groups: catalog.map((g) => ({ id: g.id, name: g.name, description: g.description, costSource: g.costSource, channels: g.channels })),
     settings: { defaultValidityDays: settings.DEFAULT_VALIDITY_DAYS, maxValidityDays: settings.MAX_VALIDITY_DAYS },
     products, bundles, projects, landed, customers, priceLists, today,
@@ -457,6 +483,8 @@ async function customerPriceCheck(ctx, payload) {
       tierTerms = gpTierTerms(use, rated && rated.gp_rates);
       const missing = tierTerms.filter((t) => t.defaulted);
       if (missing.length) flags.push(`ไม่มี GP รายสินค้าใน SMG MASTER (${missing.map((t) => t.code).join(', ')}) — ใช้ค่าเริ่มต้นของ Tier`);
+      const zero = tierTerms.filter((t) => !t.defaulted && t.pct === 0 && t.code !== 'BT_MKT' && t.code !== 'BT_DC');
+      if (zero.length) flags.push(`SMG MASTER ไม่ให้ส่วนลด ${zero.map((t) => t.code).join(', ')} สำหรับสินค้านี้ — อาจยกเลิก ไม่มีสต็อก หรือไม่ขายในช่องทางนี้ ตรวจสอบก่อนเสนอราคา`);
     }
   }
   const replaced = new Set(((gpTier && gpTierDefs().get(gpTier.used)) || {}).replacesTerms || []);
@@ -475,10 +503,18 @@ async function customerPriceCheck(ctx, payload) {
     .filter((t) => !replaced.has(t.code.toUpperCase()));
   const w = applyTerms(gross, qty, tierTerms.concat(terms));
   const vat = (await getSettings(db)).VAT_RATE;
-  return {
+  const out = {
     date, qty, customer, group, product, productKey: product ? product.key : key, gross, grossSource, flags, gpTier,
     steps: w.steps, net: w.net, netExVat: round(w.net / (1 + vat), 2), total: round(w.net * qty, 2), totalDiscount: w.totalDiscount, vatRate: vat
   };
+  if (ctx.user.canSeeGp !== true) {
+    // Net prices only: no GP %, amounts or running prices per step (any of them gives the % away).
+    out.steps = out.steps.map((s) => ({ seq: s.seq, code: s.code, name: s.name, method: s.method, category: s.category, scope: s.scope,
+      forCustomer: s.forCustomer, gpTier: s.gpTier, defaulted: s.defaulted }));
+    delete out.totalDiscount;
+    out.gpHidden = true;
+  }
+  return out;
 }
 
 async function submitRequest(ctx, payload) {
@@ -865,8 +901,21 @@ async function saveSettings(ctx, changes) {
   return getAdminInfo(ctx);
 }
 
+/** Owner menu ผู้ใช้และสิทธิ์: every user with role, active, what they may see and which menus are closed. */
+async function listUsers(ctx) {
+  owner(ctx);
+  const rows = (await ctx.db.query('select email, name, role, active, can_view_cost, can_view_gp, hidden_menus, last_login_at from users order by role desc, email')).rows;
+  return {
+    menus: MENUS.map((m) => ({ id: m.id, label: m.label, approver: !!m.approver })),
+    users: rows.map((u) => ({
+      email: u.email, name: u.name, role: u.role, active: u.active, canViewCost: u.can_view_cost, isOwner: ctx.cfg.owners.includes(u.email),
+      canViewGp: u.can_view_gp, hiddenMenus: u.hidden_menus || [], lastLoginAt: u.last_login_at ? u.last_login_at.toISOString() : ''
+    }))
+  };
+}
+
 async function saveUser(ctx, u) {
-  const me = admin(ctx);
+  const me = owner(ctx);
   u = u || {};
   const email = str(u.email, 200).toLowerCase();
   if (!/^[^@\s]+@[^@\s]+$/.test(email) || !ctx.cfg.allowedDomains.includes(email.split('@')[1])) {
@@ -876,13 +925,17 @@ async function saveUser(ctx, u) {
   if (!ROLES.includes(role)) throw new UserError('Role ไม่ถูกต้อง');
   const active = u.active !== false;
   if (email === me.email && (role !== 'ADMIN' || !active)) throw new UserError('ไม่สามารถลดสิทธิ์หรือปิดบัญชีของตัวเองได้');
+  // Left out = unchanged. Cost is never set here (COST_VIEWERS on the server only).
+  const canViewGp = u.canViewGp === undefined ? null : u.canViewGp === true;
+  const hidden = u.hiddenMenus === undefined ? null : [...new Set([].concat(u.hiddenMenus || []).map(String))].filter((m) => MENU_IDS.includes(m));
   await tx(ctx.db, async (c) => {
-    await c.query(`insert into users (email, name, role, active) values ($1, $2, $3, $4)
-      on conflict (email) do update set name = coalesce(nullif(excluded.name, ''), users.name), role = excluded.role, active = excluded.active`,
-    [email, str(u.name, 100), role, active]);
-    await log(c, me.email, 'SAVE_USER', [], { email, role, active });
+    await c.query(`insert into users (email, name, role, active, can_view_gp, hidden_menus) values ($1, $2, $3, $4, coalesce($5, false), coalesce($6, '{}'::text[]))
+      on conflict (email) do update set name = coalesce(nullif(excluded.name, ''), users.name), role = excluded.role, active = excluded.active,
+        can_view_gp = coalesce($5, users.can_view_gp), hidden_menus = coalesce($6, users.hidden_menus)`,
+    [email, str(u.name, 100), role, active, canViewGp, hidden]);
+    await log(c, me.email, 'SAVE_USER', [], { email, role, active, canViewGp, hiddenMenus: hidden });
   });
-  return getAdminInfo(ctx);
+  return listUsers(ctx);
 }
 
 /** Admin CSV upload (cost masters / legacy requests). */
@@ -1012,8 +1065,8 @@ module.exports = {
     getBootstrap, priceCheck, submitRequest, listMyRequests, listRequests, searchApprovedPrices, getLineContext,
     decideRequests, cancelMyRequests, getDashboard, getAdminInfo, saveSettings, saveUser, importCsv,
     createPriceList, savePriceList, deletePriceList, createBundle, deleteBundle, requestCatalogSync,
-    searchCustomers, customerPriceCheck
+    searchCustomers, customerPriceCheck, listUsers
   },
   // internal
-  todayIso, STATUS
+  todayIso, STATUS, menuGuard, MENUS
 };

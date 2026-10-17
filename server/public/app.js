@@ -169,6 +169,7 @@
     request: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
     approve: '<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>',
     admin: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+    owner: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/><path d="M17.5 4.5l1.5-1.5M19.5 7.5H21"/>',
     chev: '<path d="M9 6l6 6-6 6"/>'
   };
   function icon(name, cls) {
@@ -193,7 +194,12 @@
         { id: 'dashboard', label: 'ภาพรวม' }] });
     }
     if (S.boot.user.isAdmin) s.push({ id: 'admin', label: 'ผู้ดูแลระบบ', icon: 'admin', items: [{ id: 'admin', label: 'ตั้งค่า' }] });
-    return s;
+    if (S.boot.user.isOwner) s.push({ id: 'owner', label: 'เจ้าของระบบ', icon: 'owner', items: [{ id: 'users', label: 'ผู้ใช้และสิทธิ์' }] });
+    // Menus the owner closed for this user (the server refuses their functions too).
+    var hidden = S.boot.user.hiddenMenus || [];
+    return s.map(function (sec) {
+      return { id: sec.id, label: sec.label, icon: sec.icon, items: sec.items.filter(function (it) { return hidden.indexOf(it.id) === -1; }) };
+    }).filter(function (sec) { return sec.items.length; });
   }
   function routes() {
     var r = [];
@@ -240,14 +246,14 @@
 
   function go(route) {
     var ids = routes().filter(function (r) { return r.id; }).map(function (r) { return r.id; });
-    if (ids.indexOf(route) === -1) route = 'check';
+    if (ids.indexOf(route) === -1) route = ids.indexOf('check') !== -1 ? 'check' : ids[0];
     S.route = route;
     history.replaceState(null, '', '#' + route);
     renderNav();
     $('#actionbar').classList.remove('show');
     window.scrollTo(0, 0);
     ({ check: viewCheck, custprice: viewCustPrice, 'new': viewNew, mine: viewMine, approved: viewApproved, bundles: viewBundles,
-      approvals: viewApprovals, monitor: viewMonitor, dashboard: viewDashboard, admin: viewAdmin })[route]();
+      approvals: viewApprovals, monitor: viewMonitor, dashboard: viewDashboard, admin: viewAdmin, users: viewUsers })[route]();
   }
 
   function boot() {
@@ -519,11 +525,15 @@
       (r.flags.length ? '<div>' + r.flags.map(function (f) { return '<span class="flag warn">' + esc(f) + '</span>'; }).join('') + '</div>' : '') +
       '<div class="cp-net"><div><span class="label">ราคาสุทธิ (รวม VAT) ต่อชิ้น</span><div class="v">' + money(r.net, 2) + ' ฿</div></div>' +
         '<div><span class="label">ไม่รวม VAT</span><div class="v2">' + money(r.netExVat, 2) + ' ฿</div></div>' +
-        '<div><span class="label">ส่วนลดรวมจากราคาตั้ง</span><div class="v2">' + pct(r.totalDiscount, 2) + '</div></div>' +
+        (r.gpHidden ? '' : '<div><span class="label">ส่วนลดรวมจากราคาตั้ง</span><div class="v2">' + pct(r.totalDiscount, 2) + '</div></div>') +
         '<div><span class="label">มูลค่ารวม ' + esc(r.qty) + ' ชิ้น</span><div class="v2">' + money(r.total, 2) + ' ฿</div></div></div>' +
       '<div class="table-wrap"><table class="cards cp-steps"><thead><tr><th class="num">ลำดับ</th><th>เงื่อนไข</th><th class="num">ค่า</th><th class="num">หัก (บาท/ชิ้น)</th><th class="num">ราคาหลังหัก</th></tr></thead><tbody>' +
         '<tr class="gross"><td data-label="ลำดับ" class="num">–</td><td data-label="เงื่อนไข">ราคาตั้ง' + (r.grossSource === 'typed' ? ' (กรอกเอง)' : r.grossSource === 'wholesale' ? ' (ราคาส่ง Non-PC)' : ' (' + esc(g.tier) + ')') + '</td><td data-label="ค่า" class="num"></td><td data-label="หัก" class="num"></td><td data-label="ราคา" class="num"><b>' + money(r.gross, 2) + '</b></td></tr>' +
         (r.steps.length ? r.steps.map(function (s) {
+          if (r.gpHidden) {
+            return '<tr><td data-label="ลำดับ" class="num">' + esc(s.seq) + '</td><td data-label="เงื่อนไข" colspan="4">' + esc(s.name || s.code) +
+              (s.forCustomer ? '<span class="tag new">เฉพาะลูกค้า</span>' : '') + '</td></tr>';
+          }
           var val = s.method.indexOf('PCT') === 0 ? pct(Number(s.pct), 2) : money(s.thb, 2) + ' ฿';
           return '<tr><td data-label="ลำดับ" class="num">' + esc(s.seq) + '</td><td data-label="เงื่อนไข">' + esc(s.name || s.code) + ' <span class="muted">' + esc(s.code) + '</span>' +
             (s.gpTier ? '<span class="tag">GP Tier</span>' : '') + (s.defaulted ? '<span class="tag up">ค่าเริ่มต้น</span>' : '') +
@@ -531,7 +541,8 @@
             '<div class="muted">' + esc(METHOD_TEXT[s.method] || s.method) + '</div></td>' +
             '<td data-label="ค่า" class="num">' + val + '</td><td data-label="หัก" class="num">' + money(s.deduction, 2) + '</td><td data-label="ราคา" class="num">' + money(s.after, 2) + '</td></tr>';
         }).join('') : '<tr><td colspan="5" class="muted">กลุ่มนี้ยังไม่มีเงื่อนไขส่วนลด — ราคาสุทธิเท่ากับราคาตั้ง</td></tr>') +
-      '</tbody></table></div>' + wholesaleOptions(r.gpTier && r.gpTier.wholesale) +
+      '</tbody></table></div>' + (r.gpHidden ? '<p class="hint">แสดงเฉพาะชื่อเงื่อนไข — สิทธิ์ดู % GP และส่วนลดแต่ละขั้นกำหนดโดยเจ้าของระบบ</p>' : '') +
+      wholesaleOptions(r.gpTier && r.gpTier.wholesale) +
       '<p class="hint" style="margin-top:8px">ราคาสำหรับใช้อ้างอิงเท่านั้น ราคาพิเศษนอกเงื่อนไขต้องขออนุมัติที่เมนู ขออนุมัติราคา</p>';
   }
 
@@ -1322,17 +1333,7 @@
         a.priceCheckAlerts.map(function (x) {
           return '<tr><td data-label="ผู้ใช้">' + esc(x.user) + '</td><td data-label="ช่องทาง">' + esc(x.channel) + '</td><td data-label="สินค้า">' + esc(x.key) + '</td><td data-label="จำนวนราคา" class="num">' + x.prices + '</td><td data-label="ครั้ง" class="num">' + x.checks + '</td><td data-label="ล่าสุด" class="nowrap">' + esc(x.lastAt.replace('T', ' ').slice(0, 16)) + '</td></tr>';
         }).join('') + '</tbody></table></div>' : '<div class="muted">ไม่พบ</div>') + '</div>' +
-      '<div class="card stack-gap"><h2>ผู้ใช้และสิทธิ์</h2><p class="hint">ทุกคนที่ใช้อีเมลบริษัทเข้าใช้ได้ในฐานะ SALES อัตโนมัติ เพิ่มที่นี่เพื่อกำหนดเป็น SUPERVISOR / ADMIN หรือปิดบัญชี · สิทธิ์ดูต้นทุนกำหนดได้เฉพาะที่เซิร์ฟเวอร์ (COST_VIEWERS) ไม่สามารถให้สิทธิ์จากหน้านี้</p>' +
-      '<div class="table-wrap"><table class="cards"><thead><tr><th>อีเมล</th><th>ชื่อ</th><th>Role</th><th>ดูต้นทุน</th><th>ใช้งาน</th><th>เข้าใช้ล่าสุด</th><th></th></tr></thead><tbody>' +
-      a.users.map(function (u) {
-        return '<tr><td data-label="อีเมล">' + esc(u.email) + '</td><td data-label="ชื่อ">' + esc(u.name) + '</td><td data-label="Role">' + esc(u.role) + '</td><td data-label="ดูต้นทุน">' + (u.canViewCost ? '🔒 ✓' : '–') + '</td><td data-label="ใช้งาน">' + (u.active ? '✓' : '–') + '</td><td data-label="เข้าใช้ล่าสุด" class="nowrap">' + (u.lastLoginAt ? dateTh(u.lastLoginAt) : '–') + '</td>' +
-          '<td data-label=""><button class="btn small ghost" data-edit-user="' + esc(u.email) + '">แก้ไข</button></td></tr>';
-      }).join('') + '</tbody></table></div>' +
-      '<div class="user-form"><div class="field"><label>อีเมล</label><input type="text" id="u-email" placeholder="name@eve.co.th"></div>' +
-      '<div class="field"><label>ชื่อ</label><input type="text" id="u-name"></div>' +
-      '<div class="field"><label>Role</label><select id="u-role"><option>SALES</option><option>SUPERVISOR</option><option>ADMIN</option></select></div>' +
-      '<label class="row" style="font-size:13px;padding-bottom:10px"><input type="checkbox" id="u-active" checked> ใช้งาน</label>' +
-      '<button class="btn primary" id="u-save">บันทึกผู้ใช้</button></div></div>' +
+      '<div class="card stack-gap"><h2>ผู้ใช้และสิทธิ์</h2><p class="hint">เจ้าของระบบจัดการ Role การมองเห็นค่า และเมนูของแต่ละคนที่เมนู เจ้าของระบบ › ผู้ใช้และสิทธิ์ · ผู้ใช้ทั้งหมด ' + a.users.length + ' คน</p></div>' +
 
       '<div class="card stack-gap"><h2>กลุ่มราคาและช่องทาง</h2><p class="hint">อ่านอย่างเดียว — แก้ไขที่ server/config/price-groups.json แล้วเปิด Pull Request (AI ตรวจโค้ด → คุณอนุมัติ → deploy อัตโนมัติ)</p>' +
       a.catalog.map(function (g) {
@@ -1403,16 +1404,60 @@
       $$('[data-set]').forEach(function (i) { changes[i.getAttribute('data-set')] = i.getAttribute('data-pct') ? fromPctInput(i.value) : i.value; });
       run('saveSettings', changes).then(function (info) { toast('บันทึกแล้ว'); renderAdmin(info); }).catch(fail);
     });
-    $$('[data-edit-user]').forEach(function (b) {
-      b.addEventListener('click', function () {
-        var u = a.users.filter(function (x) { return x.email === b.getAttribute('data-edit-user'); })[0];
-        $('#u-email').value = u.email; $('#u-name').value = u.name; $('#u-role').value = u.role; $('#u-active').checked = u.active;
-        $('#u-email').scrollIntoView({ block: 'center' });
+  }
+
+  // ================= เจ้าของระบบ › ผู้ใช้และสิทธิ์ (owner only; the server checks too) =================
+  var ROLE_SEES = { SALES: 'สัญญาณ (indicator) เท่านั้น', SUPERVISOR: 'ราคาสุทธิ + ช่วง %MU', ADMIN: 'ราคาสุทธิ + ช่วง %MU' };
+  function viewUsers() {
+    $('#view').innerHTML = page('ผู้ใช้และสิทธิ์', 'เลือก Role การมองเห็นค่า และเมนูที่แต่ละคนเข้าได้ · ต้นทุนเห็นได้เฉพาะผู้ที่ตั้งที่เซิร์ฟเวอร์ (COST_VIEWERS) เท่านั้น') +
+      '<div id="usr"><div class="loading"><span class="spin"></span></div></div>';
+    run('listUsers').then(renderUsers).catch(fail);
+  }
+  function renderUsers(d) {
+    var box = $('#usr');
+    if (!box) return;
+    var row = function (u, i) {
+      var roleSel = '<select data-f="role"' + (u.isOwner ? ' disabled' : '') + '>' + ['SALES', 'SUPERVISOR', 'ADMIN'].map(function (r) { return '<option' + (r === u.role ? ' selected' : '') + '>' + r + '</option>'; }).join('') + '</select>';
+      var menus = d.menus.map(function (m) {
+        var off = u.isOwner || (m.approver && u.role === 'SALES');
+        return '<label class="perm"><input type="checkbox" data-menu="' + esc(m.id) + '"' + (m.approver ? ' data-approver="1"' : '') + (u.hiddenMenus.indexOf(m.id) === -1 ? ' checked' : '') + (off ? ' disabled' : '') + '> ' + esc(m.label) + '</label>';
+      }).join('');
+      return '<tr data-u="' + i + '"><td data-label="ผู้ใช้"><b>' + esc(u.name || u.email) + '</b>' + (u.isOwner ? ' <span class="tag new">เจ้าของระบบ</span>' : '') +
+          '<div class="muted">' + esc(u.email) + '</div><div class="muted">เข้าใช้ล่าสุด ' + (u.lastLoginAt ? esc(dateTh(u.lastLoginAt)) : '–') + '</div></td>' +
+        '<td data-label="Role">' + roleSel + '<label class="perm"><input type="checkbox" data-f="active"' + (u.active ? ' checked' : '') + (u.isOwner ? ' disabled' : '') + '> ใช้งาน</label></td>' +
+        '<td data-label="มองเห็น"><div class="muted">' + esc(ROLE_SEES[u.role] || '') + '</div>' +
+          '<label class="perm"><input type="checkbox" data-f="gp"' + (u.canViewGp || u.isOwner || u.canViewCost ? ' checked' : '') + (u.isOwner || u.canViewCost ? ' disabled' : '') + '> % GP และส่วนลดแต่ละขั้น (ราคาตามลูกค้า)</label>' +
+          '<div class="muted">ต้นทุน / กำไร / %MU จริง: ' + (u.canViewCost ? '🔒 เห็น (COST_VIEWERS)' : 'ไม่เห็น') + '</div></td>' +
+        '<td data-label="เมนู"><div class="perm-grid">' + menus + '</div></td>' +
+        '<td data-label="">' + (u.isOwner ? '' : '<button class="btn small primary" data-save="' + i + '">บันทึก</button>') + '</td></tr>';
+    };
+    box.innerHTML = '<div class="card"><div class="table-wrap"><table class="cards users"><thead><tr><th>ผู้ใช้</th><th>Role</th><th>มองเห็น</th><th>เมนูที่เข้าได้</th><th></th></tr></thead><tbody>' +
+      d.users.map(row).join('') + '</tbody></table></div>' +
+      '<h3 style="margin:16px 0 4px">เพิ่มผู้ใช้</h3><p class="hint">ทุกคนที่ใช้อีเมลบริษัทเข้าใช้ได้ในฐานะ SALES อัตโนมัติ เพิ่มที่นี่เพื่อกำหนดสิทธิ์ไว้ก่อนเข้าใช้ครั้งแรก</p>' +
+      '<div class="user-form"><div class="field"><label for="u-email">อีเมล</label><input type="text" id="u-email" placeholder="name@eve.co.th"></div>' +
+      '<div class="field"><label for="u-name">ชื่อ</label><input type="text" id="u-name"></div>' +
+      '<div class="field"><label for="u-role">Role</label><select id="u-role"><option>SALES</option><option>SUPERVISOR</option><option>ADMIN</option></select></div>' +
+      '<span></span><button class="btn primary" id="u-add">เพิ่ม</button></div></div>';
+    $$('#usr select[data-f="role"]').forEach(function (s) {
+      s.addEventListener('change', function () {
+        $$('[data-approver]', s.closest('tr')).forEach(function (x) { x.disabled = s.value === 'SALES'; });
       });
     });
-    $('#u-save').addEventListener('click', function () {
-      run('saveUser', { email: $('#u-email').value, name: $('#u-name').value, role: $('#u-role').value, active: $('#u-active').checked })
-        .then(function (info) { toast('บันทึกผู้ใช้แล้ว'); renderAdmin(info); }).catch(fail);
+    $$('#usr [data-save]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var u = d.users[Number(b.getAttribute('data-save'))], tr = b.closest('tr');
+        var role = tr.querySelector('[data-f="role"]').value;
+        var hidden = [];
+        $$('[data-menu]', tr).forEach(function (x) { if (!x.checked && !x.disabled) hidden.push(x.getAttribute('data-menu')); });
+        b.disabled = true;
+        run('saveUser', { email: u.email, name: u.name, role: role, active: tr.querySelector('[data-f="active"]').checked,
+          canViewGp: tr.querySelector('[data-f="gp"]').checked, hiddenMenus: hidden })
+          .then(function (x) { toast('บันทึก ' + u.email + ' แล้ว'); renderUsers(x); }).catch(function (e) { b.disabled = false; fail(e); });
+      });
+    });
+    $('#u-add').addEventListener('click', function () {
+      run('saveUser', { email: $('#u-email').value, name: $('#u-name').value, role: $('#u-role').value, active: true })
+        .then(function (x) { toast('เพิ่มผู้ใช้แล้ว'); renderUsers(x); }).catch(fail);
     });
   }
 
