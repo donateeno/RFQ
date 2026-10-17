@@ -1535,7 +1535,7 @@
         var off = u.isOwner || (m.approver && u.role === 'SALES');
         var on = u.isOwner || (m.optIn ? u.grantedMenus.indexOf(m.id) !== -1 : u.hiddenMenus.indexOf(m.id) === -1);
         return '<label class="perm"><input type="checkbox" data-menu="' + esc(m.id) + '"' + (m.approver ? ' data-approver="1"' : '') + (m.optIn ? ' data-optin="1"' : '') +
-          (on ? ' checked' : '') + (off ? ' disabled' : '') + '> ' + esc(m.label) + (m.optIn ? ' <span class="muted">(แสดง % GP)</span>' : '') + '</label>';
+          (on ? ' checked' : '') + (off ? ' disabled' : '') + '> ' + esc(m.label) + (m.needsGp ? ' <span class="muted">(ต้องมีสิทธิ์ % GP ด้วย)</span>' : '') + '</label>';
       }).join('');
       return '<tr data-u="' + i + '"><td data-label="ผู้ใช้"><b>' + esc(u.name || u.email) + '</b>' + (u.isOwner ? ' <span class="tag new">เจ้าของระบบ</span>' : '') +
           '<div class="muted">' + esc(u.email) + '</div><div class="muted">เข้าใช้ล่าสุด ' + (u.lastLoginAt ? esc(dateTh(u.lastLoginAt)) : '–') + '</div></td>' +

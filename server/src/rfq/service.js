@@ -53,12 +53,13 @@ const MENUS = [
   { id: 'approvals', label: 'รออนุมัติ', approver: true, rpc: ['decideRequests', 'listRequests', 'getLineContext'] },
   { id: 'monitor', label: 'คำขอทั้งหมด', approver: true, rpc: ['listRequests', 'getLineContext'] },
   { id: 'dashboard', label: 'ภาพรวม', approver: true, rpc: ['getDashboard'] },
-  // Opt-in: closed until the owner grants it (users.granted_menus). Shows GP % by design.
-  { id: 'gptable', label: 'ตาราง GP', optIn: true, rpc: ['getGpTable', 'getGpItem'] }
+  // Opt-in: closed until the owner grants it (users.granted_menus). Shows GP %, so it also needs the GP permission.
+  { id: 'gptable', label: 'ตาราง GP', optIn: true, needsGp: true, rpc: ['getGpTable', 'getGpItem'] }
 ];
 const MENU_IDS = MENUS.filter((m) => !m.optIn).map((m) => m.id);
 const OPT_IN_IDS = MENUS.filter((m) => m.optIn).map((m) => m.id);
-const menuOpen = (user, m) => user.isOwner === true || (m.optIn ? (user.grantedMenus || []).includes(m.id) : !(user.hiddenMenus || []).includes(m.id));
+const menuOpen = (user, m) => user.isOwner === true || ((m.optIn ? (user.grantedMenus || []).includes(m.id) : !(user.hiddenMenus || []).includes(m.id)) &&
+  (!m.needsGp || user.canSeeGp === true));
 function menuGuard(user, fn) {
   const menus = MENUS.filter((m) => m.rpc.includes(fn));
   if (menus.length && !menus.some((m) => menuOpen(user, m))) throw new UserError('เมนูนี้ถูกปิดสำหรับบัญชีของคุณ', 403);
@@ -1018,7 +1019,7 @@ async function listUsers(ctx) {
   owner(ctx);
   const rows = (await ctx.db.query('select email, name, role, active, can_view_cost, can_view_gp, hidden_menus, granted_menus, last_login_at from users order by role desc, email')).rows;
   return {
-    menus: MENUS.map((m) => ({ id: m.id, label: m.label, approver: !!m.approver, optIn: !!m.optIn })),
+    menus: MENUS.map((m) => ({ id: m.id, label: m.label, approver: !!m.approver, optIn: !!m.optIn, needsGp: !!m.needsGp })),
     users: rows.map((u) => ({
       email: u.email, name: u.name, role: u.role, active: u.active, canViewCost: u.can_view_cost, isOwner: ctx.cfg.owners.includes(u.email),
       canViewGp: u.can_view_gp, hiddenMenus: u.hidden_menus || [], grantedMenus: u.granted_menus || [], lastLoginAt: u.last_login_at ? u.last_login_at.toISOString() : ''
