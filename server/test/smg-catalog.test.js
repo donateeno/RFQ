@@ -396,7 +396,10 @@ test('GP per item: the exact MASTER and WHOLESALE cells, for the owner and users
   assert.ok(!('cost' in it) && !/"cost"/.test(JSON.stringify(it)));
   await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', grantedMenus: ['gptable', 'users'] });
   assert.deepEqual((await sales.call('getBootstrap')).user.openMenus, ['gptable'], 'only opt-in menus can be granted');
-  assert.equal((await sales.call('getGpItem', 'HOB-ALPHA')).rates.find((x) => x.rate === 'DST1').value, 0.33);
+  const asSales = await sales.call('getGpItem', 'HOB-ALPHA');
+  assert.equal(asSales.rates.find((x) => x.rate === 'DST1').value, 0.33);
+  const noCost = (o) => !/"(cost|gain|mu|unitCost)"\s*:/.test(JSON.stringify(o)) && !/1,?000(\.0+)?\b/.test(JSON.stringify(o));
+  assert.ok(noCost(asSales) && noCost(await sales.call('getGpTable')), 'a granted sales user gets no cost from the GP table or lookup');
   await assert.rejects(sales.call('getDataSources'), /เฉพาะเจ้าของระบบ/);
   await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', grantedMenus: [] });
   await assert.rejects(sales.call('getGpTable'), /เมนูนี้ถูกปิด/);
