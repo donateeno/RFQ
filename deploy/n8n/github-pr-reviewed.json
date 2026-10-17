@@ -1,5 +1,7 @@
 {
   "name": "GitHub – PR reviewed by Claude",
+  "id": "rfqGithubPrRevw1",
+  "active": false,
   "nodes": [
     {
       "parameters": {
@@ -71,7 +73,6 @@
     "templateCredsSetupCompleted": false
   },
   "tags": [],
-  "active": false,
   "staticData": null,
   "versionId": "25562580-d286-4747-9583-5082fe6256db",
   "_comment": "Called by the last step of .github/workflows/claude-review.yml (secrets N8N_PR_WEBHOOK_URL / N8N_PR_WEBHOOK_TOKEN). Swap Gmail for LINE/Telegram if preferred."

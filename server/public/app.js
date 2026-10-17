@@ -169,6 +169,7 @@
     request: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
     approve: '<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>',
     admin: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+    owner: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/><path d="M17.5 4.5l1.5-1.5M19.5 7.5H21"/>',
     chev: '<path d="M9 6l6 6-6 6"/>'
   };
   function icon(name, cls) {
@@ -193,7 +194,12 @@
         { id: 'dashboard', label: 'ภาพรวม' }] });
     }
     if (S.boot.user.isAdmin) s.push({ id: 'admin', label: 'ผู้ดูแลระบบ', icon: 'admin', items: [{ id: 'admin', label: 'ตั้งค่า' }] });
-    return s;
+    if (S.boot.user.isOwner) s.push({ id: 'owner', label: 'เจ้าของระบบ', icon: 'owner', items: [{ id: 'users', label: 'ผู้ใช้และสิทธิ์' }] });
+    // Menus the owner closed for this user (the server refuses their functions too).
+    var hidden = S.boot.user.hiddenMenus || [];
+    return s.map(function (sec) {
+      return { id: sec.id, label: sec.label, icon: sec.icon, items: sec.items.filter(function (it) { return hidden.indexOf(it.id) === -1; }) };
+    }).filter(function (sec) { return sec.items.length; });
   }
   function routes() {
     var r = [];
@@ -240,14 +246,20 @@
 
   function go(route) {
     var ids = routes().filter(function (r) { return r.id; }).map(function (r) { return r.id; });
-    if (ids.indexOf(route) === -1) route = 'check';
+    if (ids.indexOf(route) === -1) route = ids.indexOf('check') !== -1 ? 'check' : ids[0];
+    if (!route) {
+      S.route = '';
+      renderNav();
+      $('#view').innerHTML = '<div class="gate card"><h1>ยังไม่มีเมนูที่เข้าได้</h1><p class="sub">กรุณาติดต่อเจ้าของระบบเพื่อเปิดสิทธิ์</p></div>';
+      return;
+    }
     S.route = route;
     history.replaceState(null, '', '#' + route);
     renderNav();
     $('#actionbar').classList.remove('show');
     window.scrollTo(0, 0);
     ({ check: viewCheck, custprice: viewCustPrice, 'new': viewNew, mine: viewMine, approved: viewApproved, bundles: viewBundles,
-      approvals: viewApprovals, monitor: viewMonitor, dashboard: viewDashboard, admin: viewAdmin })[route]();
+      approvals: viewApprovals, monitor: viewMonitor, dashboard: viewDashboard, admin: viewAdmin, users: viewUsers })[route]();
   }
 
   function boot() {
@@ -451,7 +463,7 @@
       '<div class="grid-2"><div class="card"><div class="fields">' +
       '<div class="field wide"><label for="cp-cust">ลูกค้า (รหัสหรือชื่อ)</label><input type="search" id="cp-cust" list="dl-cp-cust" autocomplete="off" placeholder="พิมพ์รหัส SAP หรือชื่อลูกค้า…" value="' + esc(c.customer) + '"><div class="hint" id="cp-cust-info"></div></div>' +
       '<div class="field wide"><label for="cp-group">หรือกลุ่มลูกค้า (เมื่อไม่ระบุลูกค้า)</label><select id="cp-group"><option value="">– เลือกกลุ่ม –</option>' +
-        groups.map(function (g) { return '<option value="' + esc(g.code) + '"' + (g.code === c.group ? ' selected' : '') + '>' + esc(g.code + ' · ' + g.name) + (g.tier ? ' (' + esc(g.tier) + ')' : '') + '</option>'; }).join('') + '</select></div>' +
+        groups.map(function (g) { return '<option value="' + esc(g.code) + '"' + (g.code === c.group ? ' selected' : '') + '>' + esc(g.code + ' · ' + g.name) + (g.tier ? ' (' + esc(g.tier) + (g.gpTier ? ' · ' + esc(g.gpTier) : '') + ')' : '') + '</option>'; }).join('') + '</select></div>' +
       '<div class="field wide"><label for="cp-prod">สินค้า (รุ่นหรือบาร์โค้ด)</label><input type="search" id="cp-prod" autocomplete="off" placeholder="พิมพ์เพื่อค้นหา…" value="' + esc(c.product) + '"><div class="hint" id="cp-prod-info"></div></div>' +
       '<div class="field"><label for="cp-qty">จำนวน (ชิ้น)</label><input type="text" inputmode="numeric" class="num" id="cp-qty" value="' + esc(c.qty) + '"></div>' +
       '<div class="field"><label for="cp-gross">ราคาตั้ง (กรอกเมื่อไม่มีในรายการราคา)</label><input type="text" inputmode="decimal" class="num" id="cp-gross" value="' + esc(c.gross) + '" placeholder="ไม่บังคับ"></div>' +
@@ -510,7 +522,8 @@
     box.innerHTML =
       '<div class="cp-head">' +
         (r.customer ? '<div><span class="label">ลูกค้า</span><div><b>' + esc(r.customer.code) + '</b> ' + esc(r.customer.name) + '</div><div class="muted">' + esc(r.customer.channel || '-') + ' · กลุ่มจาก' + esc(r.customer.groupFrom) + '</div></div>' : '') +
-        '<div><span class="label">กลุ่มลูกค้า</span><div><b>' + esc(g.code) + '</b> ' + esc(g.name) + ' <span class="group-chip">ราคาฐาน ' + esc(g.tier || '–') + '</span></div>' +
+        '<div><span class="label">กลุ่มลูกค้า</span><div><b>' + esc(g.code) + '</b> ' + esc(g.name) + ' <span class="group-chip">ราคาฐาน ' + esc(g.tier || '–') + '</span>' +
+          (r.gpTier && r.gpTier.code ? ' <span class="group-chip">GP Tier ' + esc(r.gpTier.code) + (r.gpTier.fallback ? ' → ' + esc(r.gpTier.used) : '') + '</span>' : '') + '</div>' +
           (g.creditDays !== null && g.creditDays !== undefined ? '<div class="muted">เครดิต ' + esc(g.creditDays) + ' วัน</div>' : '') + '</div>' +
         '<div><span class="label">สินค้า</span><div><b>' + esc(r.productKey) + '</b>' + (r.product && r.product.name !== r.product.key ? ' ' + esc(r.product.name) : '') + '</div>' +
           (r.product ? '<div class="muted">' + (r.product.barcode ? 'บาร์โค้ด ' + esc(r.product.barcode) + ' · ' : '') + 'รอบราคา ' + esc(r.product.priceList) + '</div>' : '') + '</div>' +
@@ -518,19 +531,29 @@
       (r.flags.length ? '<div>' + r.flags.map(function (f) { return '<span class="flag warn">' + esc(f) + '</span>'; }).join('') + '</div>' : '') +
       '<div class="cp-net"><div><span class="label">ราคาสุทธิ (รวม VAT) ต่อชิ้น</span><div class="v">' + money(r.net, 2) + ' ฿</div></div>' +
         '<div><span class="label">ไม่รวม VAT</span><div class="v2">' + money(r.netExVat, 2) + ' ฿</div></div>' +
-        '<div><span class="label">ส่วนลดรวมจากราคาตั้ง</span><div class="v2">' + pct(r.totalDiscount, 2) + '</div></div>' +
+        (r.gpHidden ? '' : '<div><span class="label">ส่วนลดรวมจากราคาตั้ง</span><div class="v2">' + pct(r.totalDiscount, 2) + '</div></div>') +
         '<div><span class="label">มูลค่ารวม ' + esc(r.qty) + ' ชิ้น</span><div class="v2">' + money(r.total, 2) + ' ฿</div></div></div>' +
       '<div class="table-wrap"><table class="cards cp-steps"><thead><tr><th class="num">ลำดับ</th><th>เงื่อนไข</th><th class="num">ค่า</th><th class="num">หัก (บาท/ชิ้น)</th><th class="num">ราคาหลังหัก</th></tr></thead><tbody>' +
-        '<tr class="gross"><td data-label="ลำดับ" class="num">–</td><td data-label="เงื่อนไข">ราคาตั้ง' + (r.grossSource === 'typed' ? ' (กรอกเอง)' : ' (' + esc(g.tier) + ')') + '</td><td data-label="ค่า" class="num"></td><td data-label="หัก" class="num"></td><td data-label="ราคา" class="num"><b>' + money(r.gross, 2) + '</b></td></tr>' +
-        (r.steps.length ? r.steps.map(function (s) {
+        '<tr class="gross"><td data-label="ลำดับ" class="num">–</td><td data-label="เงื่อนไข">ราคาตั้ง' + (r.grossSource === 'typed' ? ' (กรอกเอง)' : r.grossSource === 'wholesale' ? ' (ราคาส่ง Non-PC)' : ' (' + esc(g.tier) + ')') + '</td><td data-label="ค่า" class="num"></td><td data-label="หัก" class="num"></td><td data-label="ราคา" class="num"><b>' + money(r.gross, 2) + '</b></td></tr>' +
+        (r.gpHidden ? '<tr><td colspan="5" class="muted">หักส่วนลดและค่าธรรมเนียมตามเงื่อนไขของลูกค้า ' + esc(r.stepCount) + ' ขั้น</td></tr>' : r.steps.length ? r.steps.map(function (s) {
           var val = s.method.indexOf('PCT') === 0 ? pct(Number(s.pct), 2) : money(s.thb, 2) + ' ฿';
           return '<tr><td data-label="ลำดับ" class="num">' + esc(s.seq) + '</td><td data-label="เงื่อนไข">' + esc(s.name || s.code) + ' <span class="muted">' + esc(s.code) + '</span>' +
+            (s.gpTier ? '<span class="tag">GP Tier</span>' : '') + (s.defaulted ? '<span class="tag up">ค่าเริ่มต้น</span>' : '') +
             (s.forCustomer ? '<span class="tag new">เฉพาะลูกค้า</span>' : '') + (s.scope && s.scope.toUpperCase() !== 'ALL' ? '<span class="tag up">เฉพาะรุ่นนี้</span>' : '') +
             '<div class="muted">' + esc(METHOD_TEXT[s.method] || s.method) + '</div></td>' +
             '<td data-label="ค่า" class="num">' + val + '</td><td data-label="หัก" class="num">' + money(s.deduction, 2) + '</td><td data-label="ราคา" class="num">' + money(s.after, 2) + '</td></tr>';
         }).join('') : '<tr><td colspan="5" class="muted">กลุ่มนี้ยังไม่มีเงื่อนไขส่วนลด — ราคาสุทธิเท่ากับราคาตั้ง</td></tr>') +
-      '</tbody></table></div>' +
+      '</tbody></table></div>' + (r.gpHidden ? '<p class="hint">แสดงเฉพาะราคาสุทธิ — สิทธิ์ดู % GP และส่วนลดแต่ละขั้นกำหนดโดยเจ้าของระบบ</p>' : '') +
+      wholesaleOptions(r.gpTier && r.gpTier.wholesale) +
       '<p class="hint" style="margin-top:8px">ราคาสำหรับใช้อ้างอิงเท่านั้น ราคาพิเศษนอกเงื่อนไขต้องขออนุมัติที่เมนู ขออนุมัติราคา</p>';
+  }
+
+  /** NON PC: other prices from the WHOLESALE tab (quantity / condition rows), shown as given in the sheet. */
+  function wholesaleOptions(w) {
+    if (!w || !w.options || !w.options.length) return '';
+    return '<h3 style="margin:12px 0 4px">ราคาส่ง Non-PC ตามเงื่อนไขอื่น</h3><dl class="kv">' +
+      w.options.map(function (o) { return '<dt>' + esc(o.label || '-') + '</dt><dd>' + money(o.net, 2) + ' ฿</dd>'; }).join('') + '</dl>' +
+      '<p class="hint">ราคาจากแท็บ WHOLESALE ก่อนหักเงื่อนไขของกลุ่ม</p>';
   }
 
   function viewNew() {
@@ -1218,13 +1241,36 @@
         '<dt>ข้ามต้นทุน (ST = N)</dt><dd>' + x.notForSale + (x.blankSaleStatus ? ' · ST ว่าง ' + x.blankSaleStatus + ' (นำเข้า)' : '') + '</dd></dl>' +
         (x.masterMismatchCount ? '<div class="banner" style="margin:8px 0 0">ราคาที่ระบบคำนวณไม่ตรงกับคอลัมน์ H/I/R ของ SMG MASTER ' + x.masterMismatchCount + ' รายการ: ' + x.masterMismatches.slice(0, 15).map(esc).join(', ') + (x.masterMismatchCount > 15 ? ' …' : '') + '</div>' : '') +
         (x.duplicateBarcodes.length ? '<div class="banner" style="margin:8px 0 0">บาร์โค้ดซ้ำในชีต (ใช้แถวแรก): ' + x.duplicateBarcodes.slice(0, 15).map(esc).join(', ') + '</div>' : '') +
-        (x.badBarcodes ? '<p class="hint">บาร์โค้ดไม่ถูกต้อง (ข้าม) ' + x.badBarcodes + ' แถว</p>' : '');
+        (x.badBarcodes ? '<p class="hint">บาร์โค้ดไม่ถูกต้อง (ข้าม) ' + x.badBarcodes + ' แถว</p>' : '') + setReport(x) + gpReport(x);
     }
     return '<div class="card stack-gap"><div class="row" style="justify-content:space-between"><h2 style="margin:0">ซิงค์ราคา SMG จาก Google Sheets</h2><div class="row">' +
       '<button class="btn small ghost" id="sync-refresh">รีเฟรช</button>' +
       (configured ? '<button class="btn small primary" id="sync-go">ซิงค์ราคาตอนนี้</button>' : '') + '</div></div>' +
-      '<p class="hint">ต้นทุน: COST UPDATE 2021 (คอลัมน์ P, ไม่รวม ST = N) · ราคาฐาน: SMG PRICELIST NATIONWIDE · Hot price: SMG MASTER (GT / DGT ออนไลน์ / BT) · ราคาตามลูกค้า: Customer Price Mapping — n8n ซิงค์ทุกวัน' +
+      '<p class="hint">ต้นทุน: COST UPDATE 2021 (คอลัมน์ P, ไม่รวม ST = N; ชุดเซ็ตจากแท็บ relationship คอลัมน์ K) · ราคาฐาน: SMG PRICELIST NATIONWIDE · Hot price: SMG MASTER (GT / DGT ออนไลน์ / BT) · ราคาตามลูกค้า: Customer Price Mapping — n8n ซิงค์ทุกวัน' +
       (configured ? '' : ' · ยังไม่ได้ตั้งค่า SYNC_WEBHOOK_URL ที่เซิร์ฟเวอร์') + '</p>' + body + '</div>';
+  }
+
+  /** Set costs from the cost file's 'relationship' tab: how many were used and which barcodes were left without cost. */
+  function setReport(x) {
+    if (!x.sets) return '<p class="hint">ต้นทุนชุดเซ็ต: ยังไม่ได้อ่านแท็บ relationship (ตั้งค่าใน n8n)</p>';
+    var list = function (label, eans) {
+      return eans.length ? '<dt>' + label + '</dt><dd>' + (eans.length >= 50 ? '50 ขึ้นไป' : eans.length) + ' · ' + eans.slice(0, 10).map(esc).join(', ') + (eans.length > 10 ? ' …' : '') + '</dd>' : '';
+    };
+    var skipped = list('ชิ้นส่วนไม่มีต้นทุน (0 หรือหาไม่พบ)', x.setZeroPart) + list('K ไม่ใช่ตัวเลข', x.setNoTotal) + list('K ≠ ผลรวมชิ้นส่วน', x.setSumMismatch) + list('บาร์โค้ดซ้ำ ต้นทุนต่างกัน', x.setConflict);
+    return '<h3 style="margin:12px 0 4px">ต้นทุนชุดเซ็ต (แท็บ relationship)</h3><dl class="kv"><dt>ใช้ได้</dt><dd>' + x.setCostUsed + ' เซ็ต จาก ' + x.setRows + ' แถว' +
+      (x.setNoBarcode ? ' · ไม่มีบาร์โค้ด ' + x.setNoBarcode + ' แถว' : '') + (x.setNotInCatalogue ? ' · ไม่อยู่ในรอบราคานี้ ' + x.setNotInCatalogue : '') + '</dd>' + skipped + '</dl>' +
+      (skipped ? '<p class="hint">เซ็ตที่ข้ามจะแสดงว่า "ไม่มีต้นทุน" จนกว่าจะแก้ในชีต ดูรายการทั้งหมดที่แท็บ "ตรวจสอบเซ็ต" ของไฟล์ COST UPDATE 2021 for import</p>' : '');
+  }
+
+  /** Per-item GP columns of SMG MASTER and the NON PC wholesale list (counts and barcodes only). */
+  function gpReport(x) {
+    var list = function (label, eans) { return eans.length ? '<dt>' + label + '</dt><dd>' + eans.length + ' · ' + eans.slice(0, 10).map(esc).join(', ') + (eans.length > 10 ? ' …' : '') + '</dd>' : ''; };
+    return '<h3 style="margin:12px 0 4px">GP รายสินค้า / ราคาส่ง Non-PC</h3><dl class="kv">' +
+      '<dt>GP จาก SMG MASTER</dt><dd>' + (x.gpColumns.length ? x.gpRated + ' รายการ · คอลัมน์ ' + x.gpColumns.map(esc).join(', ') : 'ยังไม่ได้อ่าน (ตั้งช่วง MASTER!A1:Y ใน n8n)') + '</dd>' +
+      list('GP ผิดปกติ (ข้าม)', x.gpBadRates) +
+      '<dt>ราคาส่ง Non-PC (WHOLESALE)</dt><dd>' + (x.wholesale ? x.wholesaleUsed + ' รายการ จาก ' + x.wholesaleRows + ' แถว' +
+        (x.wholesaleBadRows ? ' · ข้าม ' + x.wholesaleBadRows + ' แถว' : '') + (x.wholesaleNotInCatalogue ? ' · ไม่อยู่ในรอบราคานี้ ' + x.wholesaleNotInCatalogue : '') : 'ยังไม่ได้อ่าน (ตั้งค่าใน n8n)') + '</dd>' +
+      list('บาร์โค้ด TRUE ซ้ำ (ใช้แถวแรก)', x.wholesaleDuplicates) + '</dl>';
   }
 
   /** Customer Price Mapping sheet (ราคาตามลูกค้า): last import and what is loaded. Synced with the same button. */
@@ -1289,17 +1335,7 @@
         a.priceCheckAlerts.map(function (x) {
           return '<tr><td data-label="ผู้ใช้">' + esc(x.user) + '</td><td data-label="ช่องทาง">' + esc(x.channel) + '</td><td data-label="สินค้า">' + esc(x.key) + '</td><td data-label="จำนวนราคา" class="num">' + x.prices + '</td><td data-label="ครั้ง" class="num">' + x.checks + '</td><td data-label="ล่าสุด" class="nowrap">' + esc(x.lastAt.replace('T', ' ').slice(0, 16)) + '</td></tr>';
         }).join('') + '</tbody></table></div>' : '<div class="muted">ไม่พบ</div>') + '</div>' +
-      '<div class="card stack-gap"><h2>ผู้ใช้และสิทธิ์</h2><p class="hint">ทุกคนที่ใช้อีเมลบริษัทเข้าใช้ได้ในฐานะ SALES อัตโนมัติ เพิ่มที่นี่เพื่อกำหนดเป็น SUPERVISOR / ADMIN หรือปิดบัญชี · สิทธิ์ดูต้นทุนกำหนดได้เฉพาะที่เซิร์ฟเวอร์ (COST_VIEWERS) ไม่สามารถให้สิทธิ์จากหน้านี้</p>' +
-      '<div class="table-wrap"><table class="cards"><thead><tr><th>อีเมล</th><th>ชื่อ</th><th>Role</th><th>ดูต้นทุน</th><th>ใช้งาน</th><th>เข้าใช้ล่าสุด</th><th></th></tr></thead><tbody>' +
-      a.users.map(function (u) {
-        return '<tr><td data-label="อีเมล">' + esc(u.email) + '</td><td data-label="ชื่อ">' + esc(u.name) + '</td><td data-label="Role">' + esc(u.role) + '</td><td data-label="ดูต้นทุน">' + (u.canViewCost ? '🔒 ✓' : '–') + '</td><td data-label="ใช้งาน">' + (u.active ? '✓' : '–') + '</td><td data-label="เข้าใช้ล่าสุด" class="nowrap">' + (u.lastLoginAt ? dateTh(u.lastLoginAt) : '–') + '</td>' +
-          '<td data-label=""><button class="btn small ghost" data-edit-user="' + esc(u.email) + '">แก้ไข</button></td></tr>';
-      }).join('') + '</tbody></table></div>' +
-      '<div class="user-form"><div class="field"><label>อีเมล</label><input type="text" id="u-email" placeholder="name@eve.co.th"></div>' +
-      '<div class="field"><label>ชื่อ</label><input type="text" id="u-name"></div>' +
-      '<div class="field"><label>Role</label><select id="u-role"><option>SALES</option><option>SUPERVISOR</option><option>ADMIN</option></select></div>' +
-      '<label class="row" style="font-size:13px;padding-bottom:10px"><input type="checkbox" id="u-active" checked> ใช้งาน</label>' +
-      '<button class="btn primary" id="u-save">บันทึกผู้ใช้</button></div></div>' +
+      '<div class="card stack-gap"><h2>ผู้ใช้และสิทธิ์</h2><p class="hint">เจ้าของระบบจัดการ Role การมองเห็นค่า และเมนูของแต่ละคนที่เมนู เจ้าของระบบ › ผู้ใช้และสิทธิ์ · ผู้ใช้ทั้งหมด ' + a.users.length + ' คน</p></div>' +
 
       '<div class="card stack-gap"><h2>กลุ่มราคาและช่องทาง</h2><p class="hint">อ่านอย่างเดียว — แก้ไขที่ server/config/price-groups.json แล้วเปิด Pull Request (AI ตรวจโค้ด → คุณอนุมัติ → deploy อัตโนมัติ)</p>' +
       a.catalog.map(function (g) {
@@ -1370,16 +1406,60 @@
       $$('[data-set]').forEach(function (i) { changes[i.getAttribute('data-set')] = i.getAttribute('data-pct') ? fromPctInput(i.value) : i.value; });
       run('saveSettings', changes).then(function (info) { toast('บันทึกแล้ว'); renderAdmin(info); }).catch(fail);
     });
-    $$('[data-edit-user]').forEach(function (b) {
-      b.addEventListener('click', function () {
-        var u = a.users.filter(function (x) { return x.email === b.getAttribute('data-edit-user'); })[0];
-        $('#u-email').value = u.email; $('#u-name').value = u.name; $('#u-role').value = u.role; $('#u-active').checked = u.active;
-        $('#u-email').scrollIntoView({ block: 'center' });
+  }
+
+  // ================= เจ้าของระบบ › ผู้ใช้และสิทธิ์ (owner only; the server checks too) =================
+  var ROLE_SEES = { SALES: 'สัญญาณ (indicator) เท่านั้น', SUPERVISOR: 'ราคาสุทธิ + ช่วง %MU', ADMIN: 'ราคาสุทธิ + ช่วง %MU' };
+  function viewUsers() {
+    $('#view').innerHTML = page('ผู้ใช้และสิทธิ์', 'เลือก Role การมองเห็นค่า และเมนูที่แต่ละคนเข้าได้ · ต้นทุนเห็นได้เฉพาะผู้ที่ตั้งที่เซิร์ฟเวอร์ (COST_VIEWERS) เท่านั้น') +
+      '<div id="usr"><div class="loading"><span class="spin"></span></div></div>';
+    run('listUsers').then(renderUsers).catch(fail);
+  }
+  function renderUsers(d) {
+    var box = $('#usr');
+    if (!box) return;
+    var row = function (u, i) {
+      var roleSel = '<select data-f="role"' + (u.isOwner ? ' disabled' : '') + '>' + ['SALES', 'SUPERVISOR', 'ADMIN'].map(function (r) { return '<option' + (r === u.role ? ' selected' : '') + '>' + r + '</option>'; }).join('') + '</select>';
+      var menus = d.menus.map(function (m) {
+        var off = u.isOwner || (m.approver && u.role === 'SALES');
+        return '<label class="perm"><input type="checkbox" data-menu="' + esc(m.id) + '"' + (m.approver ? ' data-approver="1"' : '') + (u.hiddenMenus.indexOf(m.id) === -1 ? ' checked' : '') + (off ? ' disabled' : '') + '> ' + esc(m.label) + '</label>';
+      }).join('');
+      return '<tr data-u="' + i + '"><td data-label="ผู้ใช้"><b>' + esc(u.name || u.email) + '</b>' + (u.isOwner ? ' <span class="tag new">เจ้าของระบบ</span>' : '') +
+          '<div class="muted">' + esc(u.email) + '</div><div class="muted">เข้าใช้ล่าสุด ' + (u.lastLoginAt ? esc(dateTh(u.lastLoginAt)) : '–') + '</div></td>' +
+        '<td data-label="Role">' + roleSel + '<label class="perm"><input type="checkbox" data-f="active"' + (u.active ? ' checked' : '') + (u.isOwner ? ' disabled' : '') + '> ใช้งาน</label></td>' +
+        '<td data-label="มองเห็น"><div class="muted">' + esc(ROLE_SEES[u.role] || '') + '</div>' +
+          '<label class="perm"><input type="checkbox" data-f="gp"' + (u.canViewGp || u.isOwner || u.canViewCost ? ' checked' : '') + (u.isOwner || u.canViewCost ? ' disabled' : '') + '> % GP และส่วนลดแต่ละขั้น (ราคาตามลูกค้า)</label>' +
+          '<div class="muted">ต้นทุน / กำไร / %MU จริง: ' + (u.canViewCost ? '🔒 เห็น (COST_VIEWERS)' : 'ไม่เห็น') + '</div></td>' +
+        '<td data-label="เมนู"><div class="perm-grid">' + menus + '</div></td>' +
+        '<td data-label="">' + (u.isOwner ? '' : '<button class="btn small primary" data-save="' + i + '">บันทึก</button>') + '</td></tr>';
+    };
+    box.innerHTML = '<div class="card"><div class="table-wrap"><table class="cards users"><thead><tr><th>ผู้ใช้</th><th>Role</th><th>มองเห็น</th><th>เมนูที่เข้าได้</th><th></th></tr></thead><tbody>' +
+      d.users.map(row).join('') + '</tbody></table></div>' +
+      '<h3 style="margin:16px 0 4px">เพิ่มผู้ใช้</h3><p class="hint">ทุกคนที่ใช้อีเมลบริษัทเข้าใช้ได้ในฐานะ SALES อัตโนมัติ เพิ่มที่นี่เพื่อกำหนดสิทธิ์ไว้ก่อนเข้าใช้ครั้งแรก</p>' +
+      '<div class="user-form"><div class="field"><label for="u-email">อีเมล</label><input type="text" id="u-email" placeholder="name@eve.co.th"></div>' +
+      '<div class="field"><label for="u-name">ชื่อ</label><input type="text" id="u-name"></div>' +
+      '<div class="field"><label for="u-role">Role</label><select id="u-role"><option>SALES</option><option>SUPERVISOR</option><option>ADMIN</option></select></div>' +
+      '<span></span><button class="btn primary" id="u-add">เพิ่ม</button></div></div>';
+    $$('#usr select[data-f="role"]').forEach(function (s) {
+      s.addEventListener('change', function () {
+        $$('[data-approver]', s.closest('tr')).forEach(function (x) { x.disabled = s.value === 'SALES'; });
       });
     });
-    $('#u-save').addEventListener('click', function () {
-      run('saveUser', { email: $('#u-email').value, name: $('#u-name').value, role: $('#u-role').value, active: $('#u-active').checked })
-        .then(function (info) { toast('บันทึกผู้ใช้แล้ว'); renderAdmin(info); }).catch(fail);
+    $$('#usr [data-save]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var u = d.users[Number(b.getAttribute('data-save'))], tr = b.closest('tr');
+        var role = tr.querySelector('[data-f="role"]').value;
+        var hidden = [];
+        $$('[data-menu]', tr).forEach(function (x) { if (!x.checked && !x.disabled) hidden.push(x.getAttribute('data-menu')); });
+        b.disabled = true;
+        run('saveUser', { email: u.email, name: u.name, role: role, active: tr.querySelector('[data-f="active"]').checked,
+          canViewGp: tr.querySelector('[data-f="gp"]').disabled ? undefined : tr.querySelector('[data-f="gp"]').checked, hiddenMenus: hidden })
+          .then(function (x) { toast('บันทึก ' + u.email + ' แล้ว'); renderUsers(x); }).catch(function (e) { b.disabled = false; fail(e); });
+      });
+    });
+    $('#u-add').addEventListener('click', function () {
+      run('saveUser', { email: $('#u-email').value, name: $('#u-name').value, role: $('#u-role').value, active: true })
+        .then(function (x) { toast('เพิ่มผู้ใช้แล้ว'); renderUsers(x); }).catch(fail);
     });
   }
 

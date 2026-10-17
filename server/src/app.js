@@ -63,9 +63,13 @@ function createApp(deps) {
   async function sessionUser(req) {
     const email = req.session && req.session.email;
     if (!email) return null;
-    const u = (await db.query('select email, name, role, active, can_view_cost from users where email = $1', [email])).rows[0];
+    const u = (await db.query('select email, name, role, active, can_view_cost, can_view_gp, hidden_menus from users where email = $1', [email])).rows[0];
     if (!u || !u.active) { req.session = null; return null; }
-    return { email: u.email, name: u.name, role: u.role, canSeeCost: u.can_view_cost === true };
+    const isOwner = cfg.owners.includes(u.email);
+    return {
+      email: u.email, name: u.name, role: u.role, canSeeCost: u.can_view_cost === true, isOwner,
+      canSeeGp: isOwner || u.can_view_cost === true || u.can_view_gp === true, hiddenMenus: isOwner ? [] : u.hidden_menus || []
+    };
   }
 
   async function signIn(req, email, name) {
@@ -126,6 +130,7 @@ function createApp(deps) {
       if (!fn || !Object.prototype.hasOwnProperty.call(service.rpc, req.params.fn)) throw new UserError('Not found', 404);
       const user = await sessionUser(req);
       if (!user) throw new UserError('กรุณาเข้าสู่ระบบ', 401);
+      service.menuGuard(user, req.params.fn);
       const args = Array.isArray(req.body && req.body.args) ? req.body.args : [];
       const out = await fn({ db, cfg, user, notify, logger }, ...args);
       res.json({ ok: true, data: out === undefined ? null : out });

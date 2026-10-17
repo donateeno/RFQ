@@ -1,5 +1,7 @@
 {
   "name": "RFQ – mirror requests to Google Sheet",
+  "id": "rfqSheetsMirror1",
+  "active": false,
   "nodes": [
     {
       "parameters": {
@@ -136,7 +138,6 @@
     "templateCredsSetupCompleted": false
   },
   "tags": [],
-  "active": false,
   "staticData": null,
   "versionId": "c5c787e9-f688-4927-8ffd-8370307551a6",
   "_comment": "Read-only copy of all requests in tab APP_Requests_Mirror (create the tab first). Share the sheet only with people allowed to see cost."

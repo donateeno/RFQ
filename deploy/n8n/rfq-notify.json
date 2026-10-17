@@ -1,5 +1,7 @@
 {
   "name": "RFQ – send notifications",
+  "id": "rfqNotify0000001",
+  "active": false,
   "nodes": [
     {
       "parameters": {
@@ -71,7 +73,6 @@
     "templateCredsSetupCompleted": false
   },
   "tags": [],
-  "active": false,
   "staticData": null,
   "versionId": "6c7bc0cd-5248-4aa0-bae7-effde44815bd",
   "_comment": "App POSTs {event,to[],subject,html}. Credential 'RFQ integration token' = Header Auth, name Authorization, value 'Bearer <INTEGRATION_TOKEN>'. Production URL → NOTIFY_WEBHOOK_URL."

@@ -6,8 +6,11 @@ Sales staff check a special price and request approval. Supervisors approve requ
 |---|---|
 | **Sales** (anyone in `ALLOWED_DOMAIN`: @eve.co.th, @siammanor.com) | Price check with the indicator only · multi-item requests · build & share bundle sets (ชุดเซ็ต) · my requests · approved prices still valid |
 | **Supervisor** | Approval inbox with net price, **MU band** (e.g. 20–25%) and history — never cost · bulk approve/reject (not their own) · all requests + CSV · dashboard |
-| **Admin** | Settings, users & roles, price lists, CSV imports, audit log |
+| **Admin** | Settings, price lists, CSV imports, audit log |
+| **Owner** (`OWNERS`, default = `COST_VIEWERS`) | Menu เจ้าของระบบ › ผู้ใช้และสิทธิ์: each user's role, whether they see GP % in ราคาตามลูกค้า, and which menus they can open (the server refuses closed menus' functions too) |
 | **Cost viewer** (`COST_VIEWERS`, server setting only — currently the owner) | Additionally sees cost, gain and exact %MU everywhere |
+
+ราคาตามลูกค้า shows everyone the net price; the GP % and the amount of each step only to the owner and to users the owner ticks (e.g. pak.m). Nobody gets cost from that tick.
 
 **Price lists:** list prices change every ~4 months. Each import goes into a named list with an effective date (e.g. `AUG26` from 1 Aug), so the next list can be loaded early. Screens show "ราคาใหม่" and "ใหม่" tags until then, and the system switches automatically on the date. Approved special prices stay valid until their own end date. Pending requests are re-priced with the new list and shown that way to the approver. A new list always needs a start date (the n8n sync never creates one that starts today).
 
@@ -15,7 +18,7 @@ Sales staff check a special price and request approval. Supervisors approve requ
 
 **SMG catalogue (EVE / Evercook / Excel):** n8n syncs barcode, model, cost and prices daily from the cost file, the Nationwide pricelist and the SMG MASTER of the current period. Each channel sells at its own price tier: GT, DGT (online) or BT hot price, otherwise the Nationwide promotion price. Discontinued (OR), exclusive (EX), gift (G) and made-to-order (MTO) items carry a warning. Sales can search by model or barcode.
 
-**Customer price lookup (ราคาตามลูกค้า):** sales pick a customer (SAP code or name) or a customer group, plus a product. The app shows the gross price for that group's price tier, then every discount and fee in order (GP, MKT fee, DC fee, platform fees, customer-only terms, per-unit and per-order amounts), the net price with and without VAT, and the total. The data comes from the *Customer Price Mapping* Google Sheet (term library, customer groups, group terms, SAP channel → group, customer overrides, active customers), synced by n8n together with the SMG catalogue. No cost is shown.
+**Customer price lookup (ราคาตามลูกค้า):** sales pick a customer (SAP code or name) or a customer group, plus a product. The app shows the gross price for that group's price tier, then the group's GP tier with each item's own GP % from SMG MASTER (NON PC dealers: the WHOLESALE net price, else T20), then every discount and fee in order (GP, MKT fee, DC fee, platform fees, customer-only terms, per-unit and per-order amounts), the net price with and without VAT, and the total. The data comes from the *Customer Price Mapping* Google Sheet (term library, customer groups, group terms, SAP channel → group, customer overrides, active customers), synced by n8n together with the SMG catalogue. No cost is shown.
 
 **Layout:** a left main menu grouped by module, like the SAP Business One main menu: ราคาและการขาย, คำขออนุมัติราคา, ผู้อนุมัติ and ผู้ดูแลระบบ. On phones it opens as a drawer.
 
