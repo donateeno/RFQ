@@ -4,3 +4,7 @@ node_modules/
 *.log
 .env
 deploy/.env
+# SAP sync on the Windows server: local config, DPAPI secrets, Google keys
+deploy/sap-b1/sap-sync.config.psd1
+*.secret
+*service-account*.json

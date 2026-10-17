@@ -11,6 +11,7 @@
  *   GT.EVE_RFQ | GT.FOSTER_RFQ | BT.EVE_RFQ | BT.FOSTER_RFQ | OFFI_RFQ   old request tabs
  */
 const { calculate, UserError, PRICE_TIERS, TERM_METHODS, resolveTierPrice } = require('../pricing');
+const crypto = require('crypto');
 const { tx } = require('../db');
 const { getSettings, getCatalog, lookupItem } = require('./catalog');
 const { loadGpConfig, loadGpTiers } = require('../seed');
@@ -773,13 +774,139 @@ async function importCustomerPricing(db, sheets) {
   };
 }
 
+// ---------------------------------------------------------------- SAP B1 reports (deploy/sap-b1)
+
+const SAP_MAX_ROWS = 200000;
+const SAP_ITEM_HEADERS = ['itemcode', 'itemno', 'รหัสสินค้า'];
+const normHeader = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9฀-๿]/g, '');
+
+/**
+ * SAP date-times as PowerShell writes them ("10/16/2024 12:00:00 AM", or invariant "10/16/2024 00:00:00",
+ * always month first) → "2024-10-16" (or "2024-10-16 13:05:00" when there is a time of day).
+ */
+function sapDateTime(v) {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{2}):(\d{2})(?: ([AP]M))?$/i.exec(v);
+  if (!m) return v;
+  let h = +m[4];
+  if (m[7]) h = (h % 12) + (/p/i.test(m[7]) ? 12 : 0);
+  const p2 = (n) => String(n).padStart(2, '0');
+  const day = `${m[3]}-${p2(m[1])}-${p2(m[2])}`;
+  return h === 0 && m[5] === '00' && m[6] === '00' ? day : `${day} ${p2(h)}:${m[5]}:${m[6]}`;
+}
+
+/** CSV rows → header (blank / repeated names made unique) and non-blank rows as {itemCode, data}. */
+function sapRows(values) {
+  const seen = new Map();
+  const header = values[0].map((h, i) => {
+    const name = cell(values[0], i) || 'Column' + (i + 1);
+    const n = (seen.get(name.toLowerCase()) || 0) + 1;
+    seen.set(name.toLowerCase(), n);
+    return n > 1 ? `${name}_${n}` : name;
+  });
+  const itemCol = header.findIndex((h) => SAP_ITEM_HEADERS.includes(normHeader(h)));
+  const rows = [];
+  for (const r of values.slice(1)) {
+    if (!r.some((v) => String(v || '').trim())) continue;
+    const data = {};
+    header.forEach((h, i) => { data[h] = sapDateTime(cell(r, i)); });
+    rows.push({ itemCode: itemCol >= 0 ? cell(r, itemCol) : '', data });
+  }
+  return { header, rows };
+}
+
+/**
+ * The file's date: an explicit `date` (YYYY-MM-DD — the uploader sends it, because a Thai-culture Windows names
+ * files with Buddhist-era yyMMdd), else "Sales_261014.csv" / "..._2026-10-14.csv", else today.
+ */
+function sapFileDate(fileName, today, explicit) {
+  const base = explicit ? String(explicit).trim() : String(fileName || '').replace(/^.*[\\/]/, '').replace(/\.\w+$/, '');
+  let m = explicit ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(base) : /(\d{4})-(\d{2})-(\d{2})$/.exec(base);
+  if (explicit && !m) throw new UserError('วันที่ไม่ถูกต้อง: ' + base);
+  const ymd = m ? [+m[1], +m[2], +m[3]] : (m = /_(\d{2})(\d{2})(\d{2})$/.exec(base)) ? [2000 + +m[1], +m[2], +m[3]] : null;
+  if (!ymd) return today;
+  const d = new Date(Date.UTC(ymd[0], ymd[1] - 1, ymd[2]));
+  if (d.getUTCMonth() !== ymd[1] - 1 || ymd[0] < 2015 || ymd[0] > 2100) throw new UserError('วันที่ของไฟล์ไม่ถูกต้อง: ' + (explicit || fileName));
+  return d.toISOString().slice(0, 10);
+}
+
+async function insertChunks(c, rows, size, fn) {
+  for (let i = 0; i < rows.length; i += size) await fn(c, rows.slice(i, i + size));
+}
+
+/** Stock report: the whole table is replaced by the file. */
+async function importSapStock(db, values, fileName, today, explicitDate) {
+  const { header, rows } = sapRows(values);
+  const fileDate = sapFileDate(fileName, today, explicitDate);
+  await tx(db, async (c) => {
+    await c.query('delete from sap_stock');
+    await insertChunks(c, rows, 5000, (c2, part) => c2.query(
+      'insert into sap_stock (item_code, data) select * from unnest($1::text[], $2::jsonb[])',
+      [part.map((r) => r.itemCode), part.map((r) => JSON.stringify(r.data))]));
+    await c.query('insert into sap_uploads (kind, file_name, file_date, rows, header) values ($1, $2, $3, $4, $5)',
+      ['stock', String(fileName || ''), fileDate, rows.length, JSON.stringify(header)]);
+  });
+  return { imported: rows.length, fileDate, columns: header.length, itemCodeColumn: rows.some((r) => r.itemCode) };
+}
+
+/**
+ * Sales report (NDBS_ReportSales: a rolling window, re-exported daily): rows are upserted by key, so each
+ * upload only adds new transactions and refreshes changed ones. `keyColumns` names the columns that identify
+ * one line (e.g. DocType,DocNum,ItemCode); without it the whole row is the key. The report has no line
+ * number, so a key repeated within one file (same item twice on a document) gets "#2", "#3"… in file order
+ * instead of overwriting the earlier line.
+ */
+async function importSapSales(db, values, fileName, today, keyColumns, explicitDate) {
+  const { header, rows } = sapRows(values);
+  const fileDate = sapFileDate(fileName, today, explicitDate);
+  const keys = String(keyColumns || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const keyCols = keys.map((k) => header.find((h) => h.toLowerCase() === k.toLowerCase()));
+  const missing = keys.filter((k, i) => !keyCols[i]);
+  if (missing.length) throw new UserError('ไม่พบคอลัมน์คีย์ในไฟล์: ' + missing.join(', '));
+  const errors = [];
+  const byKey = new Map();
+  const seen = new Map();
+  let repeated = 0;
+  rows.forEach((r, i) => {
+    const parts = keyCols.length ? keyCols.map((h) => r.data[h]) : header.map((h) => r.data[h]);
+    if (keyCols.length && parts.every((p) => !p)) { errors.push(`แถว ${i + 2}: ไม่มีค่าในคอลัมน์คีย์`); return; }
+    const base = keyCols.length ? parts.join('|') : 'h:' + crypto.createHash('sha1').update(JSON.stringify(parts)).digest('hex');
+    const n = (seen.get(base) || 0) + 1;
+    seen.set(base, n);
+    if (n > 1) repeated++;
+    byKey.set(n > 1 ? `${base}#${n}` : base, r);
+  });
+  const list = [...byKey.entries()];
+  let inserted = 0;
+  let changed = 0;
+  await tx(db, async (c) => {
+    await insertChunks(c, list, 5000, async (c2, part) => {
+      const res = await c2.query(`insert into sap_sales (row_key, item_code, data, file_date)
+        select k, i, d, $4::date from unnest($1::text[], $2::text[], $3::jsonb[]) as t(k, i, d)
+        on conflict (row_key) do update set item_code = excluded.item_code, data = excluded.data, file_date = excluded.file_date,
+          updated_at = case when sap_sales.data is distinct from excluded.data then now() else sap_sales.updated_at end
+        returning (xmax = 0) as inserted, (updated_at = now()) as changed`,
+      [part.map((e) => e[0]), part.map((e) => e[1].itemCode), part.map((e) => JSON.stringify(e[1].data)), fileDate]);
+      inserted += res.rows.filter((r) => r.inserted).length;
+      changed += res.rows.filter((r) => !r.inserted && r.changed).length;
+    });
+    await c.query('insert into sap_uploads (kind, file_name, file_date, rows, header) values ($1, $2, $3, $4, $5)',
+      ['sales', String(fileName || ''), fileDate, list.length, JSON.stringify(header)]);
+  });
+  return { imported: list.length, inserted, updated: changed, unchanged: list.length - inserted - changed, repeatedKeys: repeated, fileDate, keyColumns: keyCols, errors: errors.slice(0, 100), errorCount: errors.length };
+}
+
 // ---------------------------------------------------------------- entry point
 
 /** @param {{newListFutureOnly?: boolean}} opts newListFutureOnly: set for n8n (see resolvePriceList) */
-async function importData(db, { type, values, sheets, brand, group, today, priceList, user, newListFutureOnly }) {
+async function importData(db, { type, values, sheets, brand, group, today, priceList, user, newListFutureOnly, fileName, fileDate, keyColumns }) {
   if (type === 'smg_catalog') return { type, ...(await importSmgCatalog(db, sheets, priceList, today, user, newListFutureOnly)) };
   if (type === 'customer_pricing') return { type, ...(await importCustomerPricing(db, sheets)) };
   if (!Array.isArray(values) || values.length < 2) throw new UserError('ไฟล์ว่างหรือไม่มีข้อมูล');
+  if (type === 'sap_stock' || type === 'sap_sales') {
+    if (values.length > SAP_MAX_ROWS + 1) throw new UserError(`ข้อมูลมากเกินไป (สูงสุด ${SAP_MAX_ROWS.toLocaleString('en-US')} แถว)`);
+    return type === 'sap_stock' ? { type, ...(await importSapStock(db, values, fileName, today, fileDate)) }
+      : { type, ...(await importSapSales(db, values, fileName, today, keyColumns, fileDate)) };
+  }
   if (values.length > 60000) throw new UserError('ข้อมูลมากเกินไป (สูงสุด 60,000 แถว)');
   switch (type) {
     case 'products': return { type, ...(await upsertProducts(db, productsFlat(values, brand), priceList, today, user, newListFutureOnly)) };
