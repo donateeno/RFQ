@@ -116,7 +116,7 @@ async function sourceStatus(db, staleHours, now) {
 function problems(status) {
   const out = [];
   status.types.forEach((t) => {
-    if (t.failed) out.push({ key: `${t.type}:failed:${t.error.slice(0, 80)}`, text: `${t.label}: ซิงค์ไม่สำเร็จ — ${t.error}` });
+    if (t.failed) out.push({ key: `${t.type}:failed`, text: `${t.label}: ซิงค์ไม่สำเร็จ — ${t.error}` });
     else if (t.stale) out.push({ key: `${t.type}:stale`, text: `${t.label}: ไม่มีการซิงค์สำเร็จเกิน ${status.staleHours} ชั่วโมง (ล่าสุด ${t.lastOkAt.slice(0, 16).replace('T', ' ')} UTC)` });
   });
   status.files.forEach((f) => f.tabs.forEach((t) => {
