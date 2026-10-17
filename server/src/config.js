@@ -22,6 +22,8 @@ function load(env = process.env) {
     costViewers: list(env.COST_VIEWERS),
     // Who manages users, permissions and the owner menus in the app. Defaults to the cost viewers.
     owners: list(env.OWNERS || env.COST_VIEWERS),
+    // LINE user IDs (case-sensitive) that get data-source alerts through n8n, besides the owners' email.
+    alertLineTo: String(env.ALERT_LINE_TO || '').split(',').map((s) => s.trim()).filter((s) => /^U[0-9a-f]{32}$/.test(s)),
     integrationToken: env.INTEGRATION_TOKEN || '',
     notifyWebhookUrl: env.NOTIFY_WEBHOOK_URL || '',
     // n8n webhook that starts the SMG catalogue sync (cost file + Nationwide pricelist + SMG MASTER)

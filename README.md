@@ -7,7 +7,8 @@ Sales staff check a special price and request approval. Supervisors approve requ
 | **Sales** (anyone in `ALLOWED_DOMAIN`: @eve.co.th, @siammanor.com) | Price check with the indicator only · multi-item requests · build & share bundle sets (ชุดเซ็ต) · my requests · approved prices still valid |
 | **Supervisor** | Approval inbox with net price, **MU band** (e.g. 20–25%) and history — never cost · bulk approve/reject (not their own) · all requests + CSV · dashboard |
 | **Admin** | Settings, price lists, CSV imports, audit log |
-| **Owner** (`OWNERS`, default = `COST_VIEWERS`) | Menu เจ้าของระบบ › ผู้ใช้และสิทธิ์: each user's role, whether they see GP % in ราคาตามลูกค้า, and which menus they can open (the server refuses closed menus' functions too) |
+| **Owner** (`OWNERS`, default = `COST_VIEWERS`) | Menu เจ้าของระบบ › ผู้ใช้และสิทธิ์: each user's role, whether they see GP % in ราคาตามลูกค้า, and which menus they can open (the server refuses closed menus' functions too) · เจ้าของระบบ › แหล่งข้อมูล: every synced Google Sheet (file link, tab, range, each column read and what for) with the state of its last sync · alerts by email, LINE (`ALERT_LINE_TO`) and an in-app banner when a sync fails, a tab is missing or empty, or nothing synced for `SYNC_STALE_HOURS` |
+| **ตาราง GP** (opt-in menu the owner grants per user) | GP tiers with the spread of per-item rates, each customer group's terms and the channel discounts, each with the file / tab / column or row it comes from; GP lookup per item down to the MASTER and WHOLESALE cell. No cost |
 | **Cost viewer** (`COST_VIEWERS`, server setting only — currently the owner) | Additionally sees cost, gain and exact %MU everywhere |
 
 ราคาตามลูกค้า shows everyone the net price; the GP % and the amount of each step only to the owner and to users the owner ticks (e.g. pak.m). Nobody gets cost from that tick.

@@ -268,3 +268,34 @@ test('the owner can close menus per user; the server refuses their functions too
   await owner.call('saveUser', { email: 'sales1@eve.co.th', role: 'SALES', hiddenMenus: [] });
   assert.equal((await price(sales, { groupCode: 'BT', productKey: 'HOB-TIER' })).net, 1147.5);
 });
+
+test('ตาราง GP: tiers with the spread of item rates, group terms and channel discounts, each with its source; opt-in for others', async () => {
+  const d = await owner.call('getGpTable');
+  assert.equal(d.priceList, 'APR26');
+  const t18 = d.tiers.find((t) => t.code === 'T18').steps[0];
+  assert.equal(t18.source, 'SMG MASTER APR26 › MASTER › คอลัมน์ M (ส่วนลดT18)');
+  assert.equal(t18.defaultSource, 'config/price-groups.json › gpTiers › T18');
+  assert.ok(t18.stats.values.some((v) => v.rate === 0 && v.items === 1), JSON.stringify(t18.stats));
+  assert.ok(t18.stats.missing > 0, 'items without a rate use the default');
+  const bt = d.tiers.find((t) => t.code === 'BT');
+  assert.deepEqual(bt.steps.map((s) => s.fee), [false, true, true]);
+  assert.deepEqual(bt.replacesTerms, ['BT_GP', 'BT_MKT', 'DC_FEE']);
+  const nonpc = d.tiers.find((t) => t.code === 'NONPC');
+  assert.deepEqual([nonpc.netPrice, nonpc.fallback, nonpc.items], [true, 'T20', 1]);
+  const souv = d.groups.find((g) => g.code === 'SOUVANNY_T24');
+  assert.deepEqual([souv.priceTier, souv.gpTier], ['GT', 'T24']);
+  assert.match(souv.source, /^Customer Price Mapping › Customer Groups แถว \d+$/);
+  assert.deepEqual(souv.terms.map((t) => [t.code, t.pct]), [['EXW', 0.03]]);
+  assert.equal(souv.terms[0].source, 'Customer Price Mapping › Group Terms แถว 13');
+  assert.deepEqual(d.customerTerms.map((t) => [t.customer, t.code]), [['300200', 'CASH_DISC']]);
+  const gt = d.channels.flatMap((g) => g.channels).find((c) => c.id === 'GT_EVE');
+  assert.equal(gt.source, 'config/price-groups.json › GT › GT_EVE');
+  assert.ok(gt.discounts.length >= 1 && typeof gt.discounts[0].default === 'number');
+  assert.ok(!/"cost"|gain|"mu"/.test(JSON.stringify(d)), 'no cost');
+
+  await assert.rejects(sup.call('getGpTable'), /เมนูนี้ถูกปิด/, 'pak.m has GP % but not this menu until granted');
+  await owner.call('saveUser', { email: 'pak.m@eve.co.th', role: 'SUPERVISOR', grantedMenus: ['gptable'] });
+  assert.equal((await sup.call('getGpTable')).tiers.length, d.tiers.length);
+  const listed = (await owner.call('listUsers')).users.find((u) => u.email === 'pak.m@eve.co.th');
+  assert.deepEqual(listed.grantedMenus, ['gptable']);
+});

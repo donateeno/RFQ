@@ -181,7 +181,7 @@
       { id: 'sales', label: 'ราคาและการขาย', icon: 'price', items: [
         { id: 'check', label: 'ตรวจราคาตามช่องทาง' },
         { id: 'custprice', label: 'ราคาตามลูกค้า' },
-        { id: 'bundles', label: 'ชุดเซ็ต' }] },
+        { id: 'bundles', label: 'ชุดเซ็ต' }].concat((S.boot.user.openMenus || []).indexOf('gptable') !== -1 ? [{ id: 'gptable', label: 'ตาราง GP' }] : []) },
       { id: 'rfq', label: 'คำขออนุมัติราคา', icon: 'request', items: [
         { id: 'new', label: 'ขออนุมัติราคา' },
         { id: 'mine', label: 'คำขอของฉัน' },
@@ -194,7 +194,7 @@
         { id: 'dashboard', label: 'ภาพรวม' }] });
     }
     if (S.boot.user.isAdmin) s.push({ id: 'admin', label: 'ผู้ดูแลระบบ', icon: 'admin', items: [{ id: 'admin', label: 'ตั้งค่า' }] });
-    if (S.boot.user.isOwner) s.push({ id: 'owner', label: 'เจ้าของระบบ', icon: 'owner', items: [{ id: 'users', label: 'ผู้ใช้และสิทธิ์' }] });
+    if (S.boot.user.isOwner) s.push({ id: 'owner', label: 'เจ้าของระบบ', icon: 'owner', items: [{ id: 'users', label: 'ผู้ใช้และสิทธิ์' }, { id: 'sources', label: 'แหล่งข้อมูล', badge: (S.boot.alerts || []).length }] });
     // Menus the owner closed for this user (the server refuses their functions too).
     var hidden = S.boot.user.hiddenMenus || [];
     return s.map(function (sec) {
@@ -259,7 +259,7 @@
     $('#actionbar').classList.remove('show');
     window.scrollTo(0, 0);
     ({ check: viewCheck, custprice: viewCustPrice, 'new': viewNew, mine: viewMine, approved: viewApproved, bundles: viewBundles,
-      approvals: viewApprovals, monitor: viewMonitor, dashboard: viewDashboard, admin: viewAdmin, users: viewUsers })[route]();
+      approvals: viewApprovals, monitor: viewMonitor, dashboard: viewDashboard, admin: viewAdmin, users: viewUsers, sources: viewSources, gptable: viewGpTable })[route]();
   }
 
   function boot() {
@@ -302,7 +302,10 @@
   }
 
   function page(title, sub, actions) {
-    return '<div class="page-head"><div><h1>' + esc(title) + '</h1>' + (sub ? '<p class="sub">' + sub + '</p>' : '') + '</div>' +
+    var alerts = S.boot && S.boot.alerts && S.boot.alerts.length && S.route !== 'sources'
+      ? '<div class="banner alert-banner"><b>แจ้งเตือนแหล่งข้อมูล</b> ' + S.boot.alerts.slice(0, 3).map(esc).join(' · ') +
+        (S.boot.alerts.length > 3 ? ' …' : '') + ' <a href="#sources" data-go="sources">ดูรายละเอียด</a></div>' : '';
+    return alerts + '<div class="page-head"><div><h1>' + esc(title) + '</h1>' + (sub ? '<p class="sub">' + sub + '</p>' : '') + '</div>' +
       (actions ? '<div class="row">' + actions + '</div>' : '') + '</div>';
   }
 
@@ -1408,6 +1411,114 @@
     });
   }
 
+  // ================= เจ้าของระบบ › แหล่งข้อมูล (owner only) =================
+  var SRC_STATE = { ok: ['ใช้งานอยู่', 'good'], missing: ['ไม่ได้รับข้อมูล', 'bad'], empty: ['ไม่มีข้อมูล', 'bad'], stale: ['ขาดการซิงค์', 'bad'],
+    failed: ['ซิงค์ไม่สำเร็จ', 'bad'], never: ['ยังไม่เคยซิงค์', 'muted'] };
+  function viewSources() {
+    $('#view').innerHTML = page('แหล่งข้อมูล', 'ไฟล์ Google Sheets ทุกไฟล์ที่ n8n ซิงค์เข้าแอป: แท็บ ช่วงข้อมูล คอลัมน์ที่ใช้ และสถานะล่าสุด') +
+      '<div id="src"><div class="loading"><span class="spin"></span></div></div>';
+    run('getDataSources').then(renderSources).catch(fail);
+  }
+  function renderSources(d) {
+    var box = $('#src');
+    if (!box) return;
+    var when = function (iso) { return iso ? esc(dateTh(iso)) + ' ' + esc(timeTh(iso)) : '–'; };
+    box.innerHTML =
+      (d.problems.length ? '<div class="banner"><b>ต้องตรวจสอบ</b><ul class="plain">' + d.problems.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul>' +
+        '<span class="hint">แจ้งทางอีเมลเจ้าของระบบ' + (d.lineAlerts ? ' และ LINE' : '') + ' ปัญหาเดิมแจ้งซ้ำทุก 24 ชม. จนกว่าจะแก้</span></div>'
+        : '<div class="notice">' + (d.types.some(function (t) { return t.never; }) ? 'ยังไม่เคยซิงค์บางชุดข้อมูล — ตรวจ workflow ใน n8n' : 'ทุกแหล่งข้อมูลซิงค์ปกติ') +
+          ' · ตรวจทุกชั่วโมง แจ้งเตือนเมื่อไม่มีการซิงค์สำเร็จเกิน ' + esc(d.staleHours) + ' ชม.</div>') +
+      '<div class="card stack-gap"><h2>การซิงค์</h2><div class="table-wrap"><table class="cards"><thead><tr><th>ชุดข้อมูล</th><th>สำเร็จล่าสุด</th><th>ล้มเหลวล่าสุด</th><th>สถานะ</th></tr></thead><tbody>' +
+        d.types.map(function (t) {
+          var st = t.never ? SRC_STATE.never : t.failed ? SRC_STATE.failed : t.stale ? SRC_STATE.stale : SRC_STATE.ok;
+          return '<tr><td data-label="ชุดข้อมูล"><b>' + esc(t.label) + '</b>' + (t.priceList ? '<div class="muted">รอบราคา ' + esc(t.priceList) + '</div>' : '') + '</td>' +
+            '<td data-label="สำเร็จล่าสุด" class="nowrap">' + when(t.lastOkAt) + '</td><td data-label="ล้มเหลวล่าสุด" class="nowrap">' + when(t.lastFailedAt) + '</td>' +
+            '<td data-label="สถานะ"><span class="src-st ' + st[1] + '">' + st[0] + '</span>' + (t.error ? '<div class="muted">' + esc(t.error) + '</div>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div></div>' +
+      d.files.map(function (f) {
+        return '<div class="card stack-gap"><h2>' + esc(f.name) + (f.url ? ' <a class="small-link" href="' + esc(f.url) + '" target="_blank" rel="noopener">เปิดไฟล์ ↗</a>' : '') + '</h2>' +
+          '<p class="hint">' + esc(f.use) + (f.url ? '' : ' · ยังไม่ทราบลิงก์ไฟล์ (n8n จะส่งมาพร้อมการซิงค์ครั้งถัดไป)') + '</p>' +
+          f.tabs.map(function (t) {
+            var st = SRC_STATE[t.state] || SRC_STATE.ok;
+            return '<details class="src-tab"><summary><b>' + esc(t.tab) + '</b> <span class="muted">' + esc(t.range) + '</span> ' +
+                '<span class="src-st ' + st[1] + '">' + st[0] + '</span>' + (t.rows !== null ? ' <span class="muted">' + esc(t.rows) + ' แถว</span>' : '') +
+                (t.required ? '' : ' <span class="tag old">ไม่บังคับ</span>') + '</summary>' +
+              '<div class="table-wrap"><table class="cards"><thead><tr><th>คอลัมน์</th><th>หัวคอลัมน์ที่ระบบตรวจ</th><th>ใช้ทำอะไร</th></tr></thead><tbody>' +
+              t.columns.map(function (c) {
+                return '<tr><td data-label="คอลัมน์"><b>' + esc(c.col) + '</b></td><td data-label="หัวคอลัมน์">' + esc(c.header) + '</td><td data-label="ใช้ทำอะไร">' + esc(c.use) + '</td></tr>';
+              }).join('') + '</tbody></table></div></details>';
+          }).join('') + '</div>';
+      }).join('') +
+      '<p class="hint">ถ้าย้ายหรือเปลี่ยนชื่อคอลัมน์ที่ระบบตรวจ การซิงค์ชุดนั้นจะหยุดและแจ้งเตือน โดยไม่เปลี่ยนข้อมูลเดิมในแอป · แท็บที่ไม่บังคับหายไป ส่วนอื่นยังซิงค์ต่อและแจ้งเตือน</p>';
+  }
+
+  // ================= ตาราง GP (opt-in; shows GP % by design) =================
+  function viewGpTable() {
+    $('#view').innerHTML = page('ตาราง GP', 'ส่วนลด GP ที่ระบบใช้อยู่ตอนนี้ แยกตามช่องทาง GP Tier และกลุ่มลูกค้า พร้อมที่มาของแต่ละค่า (ไม่มีต้นทุน)') +
+      '<div class="card stack-gap"><h2>ค้นหา GP รายสินค้า</h2><div class="fields"><div class="field wide"><label for="gp-item">สินค้า (รุ่นหรือบาร์โค้ด)</label>' +
+      '<input type="search" id="gp-item" list="dl-P-EVE" autocomplete="off" placeholder="พิมพ์เพื่อค้นหา…"></div></div><div id="gp-item-res"></div></div>' +
+      '<div id="gpt"><div class="loading"><span class="spin"></span></div></div>';
+    run('getGpTable').then(renderGpTable).catch(fail);
+    var lookup = debounce(function () {
+      var k = $('#gp-item').value.trim(), res = $('#gp-item-res');
+      if (!k) { res.innerHTML = ''; return; }
+      run('getGpItem', k).then(function (it) {
+        res.innerHTML = '<p><b>' + esc(it.key) + '</b> ' + (it.name !== it.key ? esc(it.name) : '') + ' <span class="muted">' + esc(it.barcode) + ' · รอบราคา ' + esc(it.priceList) +
+            ' · GT ' + money(it.prices.GT) + ' / DGT ' + money(it.prices.DGT) + ' / BT ' + money(it.prices.BT) + '</span></p>' +
+          '<div class="table-wrap"><table class="cards"><thead><tr><th>อัตรา</th><th class="num">GP</th><th>เซลล์ต้นทาง</th></tr></thead><tbody>' +
+          it.rates.map(function (r) {
+            return '<tr><td data-label="อัตรา">' + esc(r.rate) + ' <span class="muted">' + esc(r.col) + ' · ' + esc(r.header) + '</span></td>' +
+              '<td data-label="GP" class="num">' + (r.value === null ? '<span class="muted">ว่าง (ใช้ค่าเริ่มต้น)</span>' : pct(r.value, 2)) + '</td><td data-label="เซลล์">' + esc(r.cell || '–') + '</td></tr>';
+          }).join('') + '</tbody></table></div>' +
+          (it.wholesale ? '<p>ราคาส่ง Non-PC <b>' + money(it.wholesale.net, 2) + ' ฿</b> <span class="muted">' + esc(it.wholesale.cell) + '</span>' +
+            it.wholesale.options.map(function (o) { return '<br>' + esc(o.label) + ' ' + money(o.net, 2) + ' ฿'; }).join('') + '</p>' : '<p class="muted">ไม่มีในใบราคา Non-PC (WHOLESALE)</p>');
+      }).catch(function (e) { res.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
+    }, 400);
+    $('#gp-item').addEventListener('input', lookup);
+  }
+  function renderGpTable(d) {
+    var box = $('#gpt');
+    if (!box) return;
+    var range = function (d0) { return d0.editable ? ' (' + pct(d0.min || 0, 0) + '–' + pct(d0.max === null ? 0.99 : d0.max, 0) + ')' : ' 🔒'; };
+    box.innerHTML =
+      '<div class="card stack-gap"><h2>GP Tier (ราคาตามลูกค้า)</h2><p class="hint">GP ของแต่ละสินค้ามาจาก ' + esc(d.master) + ' ถ้าช่องว่างใช้ค่าเริ่มต้น · การกระจายของอัตราคิดจากรอบราคา ' + esc(d.priceList || '–') + '</p>' +
+      '<div class="table-wrap"><table class="cards"><thead><tr><th>Tier</th><th>ขั้น</th><th class="num">ค่าเริ่มต้น</th><th>อัตราที่ใช้อยู่ (จำนวนสินค้า)</th><th>ที่มา</th></tr></thead><tbody>' +
+      d.tiers.map(function (t) {
+        if (t.netPrice) {
+          return '<tr><td data-label="Tier"><b>' + esc(t.code) + '</b></td><td data-label="ขั้น">ราคาส่งสุทธิ Non-PC</td><td data-label="ค่าเริ่มต้น" class="num">' + esc(t.default) + '</td>' +
+            '<td data-label="อัตรา">' + esc(t.items) + ' สินค้ามีราคาส่ง</td><td data-label="ที่มา" class="muted">' + esc(t.source) + '</td></tr>';
+        }
+        return t.steps.map(function (s, i) {
+          return '<tr><td data-label="Tier">' + (i ? '' : '<b>' + esc(t.code) + '</b>' + (t.replacesTerms.length ? '<div class="muted">แทนเงื่อนไขกลุ่ม ' + esc(t.replacesTerms.join(', ')) + '</div>' : '')) + '</td>' +
+            '<td data-label="ขั้น">' + esc(s.label) + (s.fee ? ' <span class="tag old">ค่าธรรมเนียม</span>' : '') + '</td>' +
+            '<td data-label="ค่าเริ่มต้น" class="num">' + pct(s.default, 2) + '</td>' +
+            '<td data-label="อัตรา">' + (s.stats.values.length ? s.stats.values.map(function (v) { return pct(v.rate, 2) + ' (' + v.items + ')'; }).join(' · ') : '–') +
+              (s.stats.missing ? '<div class="muted">ว่าง ' + s.stats.missing + ' สินค้า → ค่าเริ่มต้น</div>' : '') + '</td>' +
+            '<td data-label="ที่มา" class="muted">' + esc(s.source) + '<br>ค่าเริ่มต้น: ' + esc(s.defaultSource) + '</td></tr>';
+        }).join('');
+      }).join('') + '</tbody></table></div></div>' +
+      '<div class="card stack-gap"><h2>กลุ่มลูกค้าและเงื่อนไข</h2><div class="table-wrap"><table class="cards"><thead><tr><th>กลุ่ม</th><th>ราคาฐาน / GP Tier</th><th>เงื่อนไข (ตามลำดับ)</th><th>ที่มา</th></tr></thead><tbody>' +
+      (d.groups.length ? '' : '<tr><td colspan="4" class="muted">ยังไม่มีข้อมูล — ซิงค์ไฟล์ Customer Price Mapping ก่อน</td></tr>') +
+      d.groups.map(function (g) {
+        return '<tr><td data-label="กลุ่ม"><b>' + esc(g.code) + '</b><div class="muted">' + esc(g.name) + '</div></td><td data-label="ราคาฐาน">' + esc(g.priceTier || '–') + ' / ' + esc(g.gpTier || '–') + '</td>' +
+          '<td data-label="เงื่อนไข">' + (g.terms.length ? g.terms.map(function (t) {
+            return esc(t.seq) + '. ' + esc(t.name || t.code) + ' ' + (t.method.indexOf('PCT') === 0 ? pct(Number(t.pct), 2) : money(t.thb, 2) + ' ฿') +
+              (t.scope && t.scope.toUpperCase() !== 'ALL' ? ' <span class="tag up">' + esc(t.scope) + '</span>' : '') + ' <span class="muted">(' + esc(t.source.replace('Customer Price Mapping › ', '')) + ')</span>';
+          }).join('<br>') : '<span class="muted">–</span>') + '</td><td data-label="ที่มา" class="muted">' + esc(g.source) + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      (d.customerTerms.length ? '<h3 style="margin:12px 0 4px">เงื่อนไขเฉพาะลูกค้า</h3><ul class="plain">' + d.customerTerms.map(function (t) {
+        return '<li><b>' + esc(t.customer) + '</b> ' + esc(t.seq) + '. ' + esc(t.name || t.code) + ' ' + (t.method.indexOf('PCT') === 0 ? pct(Number(t.pct), 2) : money(t.thb, 2) + ' ฿') + ' <span class="muted">' + esc(t.source) + '</span></li>';
+      }).join('') + '</ul>' : '') + '</div>' +
+      '<div class="card stack-gap"><h2>ส่วนลดตามช่องทาง (ขออนุมัติราคา)</h2><p class="hint">แก้ไขที่ config/price-groups.json ผ่าน Pull Request</p>' +
+      d.channels.map(function (g) {
+        return '<h3 style="margin:12px 0 4px">' + esc(g.group) + '</h3><div class="table-wrap"><table class="cards"><thead><tr><th>ช่องทาง</th><th>ส่วนลด (ค่าเริ่มต้น / ช่วงที่กรอกได้)</th><th>ที่มา</th></tr></thead><tbody>' +
+          g.channels.map(function (c) {
+            return '<tr><td data-label="ช่องทาง">' + esc(c.name) + (c.priceTier ? ' <span class="group-chip">' + esc(c.priceTier) + '</span>' : '') + '</td><td data-label="ส่วนลด">' +
+              c.discounts.map(function (x) { return esc(x.label) + ' ' + pct(x.default, 2) + range(x); }).join('<br>') + '</td><td data-label="ที่มา" class="muted">' + esc(c.source) + '</td></tr>';
+          }).join('') + '</tbody></table></div>';
+      }).join('') + '</div>';
+  }
+
   // ================= เจ้าของระบบ › ผู้ใช้และสิทธิ์ (owner only; the server checks too) =================
   var ROLE_SEES = { SALES: 'สัญญาณ (indicator) เท่านั้น', SUPERVISOR: 'ราคาสุทธิ + ช่วง %MU', ADMIN: 'ราคาสุทธิ + ช่วง %MU' };
   function viewUsers() {
@@ -1422,7 +1533,9 @@
       var roleSel = '<select data-f="role"' + (u.isOwner ? ' disabled' : '') + '>' + ['SALES', 'SUPERVISOR', 'ADMIN'].map(function (r) { return '<option' + (r === u.role ? ' selected' : '') + '>' + r + '</option>'; }).join('') + '</select>';
       var menus = d.menus.map(function (m) {
         var off = u.isOwner || (m.approver && u.role === 'SALES');
-        return '<label class="perm"><input type="checkbox" data-menu="' + esc(m.id) + '"' + (m.approver ? ' data-approver="1"' : '') + (u.hiddenMenus.indexOf(m.id) === -1 ? ' checked' : '') + (off ? ' disabled' : '') + '> ' + esc(m.label) + '</label>';
+        var on = u.isOwner || (m.optIn ? u.grantedMenus.indexOf(m.id) !== -1 : u.hiddenMenus.indexOf(m.id) === -1);
+        return '<label class="perm"><input type="checkbox" data-menu="' + esc(m.id) + '"' + (m.approver ? ' data-approver="1"' : '') + (m.optIn ? ' data-optin="1"' : '') +
+          (on ? ' checked' : '') + (off ? ' disabled' : '') + '> ' + esc(m.label) + (m.optIn ? ' <span class="muted">(แสดง % GP)</span>' : '') + '</label>';
       }).join('');
       return '<tr data-u="' + i + '"><td data-label="ผู้ใช้"><b>' + esc(u.name || u.email) + '</b>' + (u.isOwner ? ' <span class="tag new">เจ้าของระบบ</span>' : '') +
           '<div class="muted">' + esc(u.email) + '</div><div class="muted">เข้าใช้ล่าสุด ' + (u.lastLoginAt ? esc(dateTh(u.lastLoginAt)) : '–') + '</div></td>' +
@@ -1449,11 +1562,14 @@
       b.addEventListener('click', function () {
         var u = d.users[Number(b.getAttribute('data-save'))], tr = b.closest('tr');
         var role = tr.querySelector('[data-f="role"]').value;
-        var hidden = [];
-        $$('[data-menu]', tr).forEach(function (x) { if (!x.checked && !x.disabled) hidden.push(x.getAttribute('data-menu')); });
+        var hidden = [], granted = [];
+        $$('[data-menu]', tr).forEach(function (x) {
+          if (x.disabled) return;
+          if (x.getAttribute('data-optin')) { if (x.checked) granted.push(x.getAttribute('data-menu')); } else if (!x.checked) hidden.push(x.getAttribute('data-menu'));
+        });
         b.disabled = true;
         run('saveUser', { email: u.email, name: u.name, role: role, active: tr.querySelector('[data-f="active"]').checked,
-          canViewGp: tr.querySelector('[data-f="gp"]').disabled ? undefined : tr.querySelector('[data-f="gp"]').checked, hiddenMenus: hidden })
+          canViewGp: tr.querySelector('[data-f="gp"]').disabled ? undefined : tr.querySelector('[data-f="gp"]').checked, hiddenMenus: hidden, grantedMenus: granted })
           .then(function (x) { toast('บันทึก ' + u.email + ' แล้ว'); renderUsers(x); }).catch(function (e) { b.disabled = false; fail(e); });
       });
     });
@@ -1463,6 +1579,10 @@
     });
   }
 
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('[data-go]');
+    if (a) { e.preventDefault(); go(a.getAttribute('data-go')); }
+  });
   $('#menu-btn').addEventListener('click', function () { setNavOpen(!document.body.classList.contains('nav-open')); });
   $('#scrim').addEventListener('click', function () { setNavOpen(false); });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setNavOpen(false); });
