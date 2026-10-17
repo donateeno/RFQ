@@ -247,6 +247,12 @@
   function go(route) {
     var ids = routes().filter(function (r) { return r.id; }).map(function (r) { return r.id; });
     if (ids.indexOf(route) === -1) route = ids.indexOf('check') !== -1 ? 'check' : ids[0];
+    if (!route) {
+      S.route = '';
+      renderNav();
+      $('#view').innerHTML = '<div class="gate card"><h1>ยังไม่มีเมนูที่เข้าได้</h1><p class="sub">กรุณาติดต่อเจ้าของระบบเพื่อเปิดสิทธิ์</p></div>';
+      return;
+    }
     S.route = route;
     history.replaceState(null, '', '#' + route);
     renderNav();

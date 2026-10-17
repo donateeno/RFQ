@@ -14,7 +14,7 @@ const { tx } = require('../db');
 const { getSettings, getCatalog, getChannel, lookupItem, landedFromRow, priceContext, productIn } = require('./catalog');
 const { importData, parseCsv } = require('./importers');
 const notifyMsg = require('./notifications');
-const { loadGpTiers } = require('../seed');
+const { loadGpConfig } = require('../seed');
 
 const STATUS = { PENDING: 'Pending', APPROVED: 'Approved', REJECTED: 'Rejected', CANCELLED: 'Cancelled', CLOSED: 'Closed' };
 const DISPLAY_STATUSES = ['Pending', 'Approved', 'Expired', 'Rejected', 'Cancelled', 'Closed'];
@@ -378,8 +378,9 @@ async function searchCustomers(ctx, q) {
 
 /** Price tier → where the gross price comes from in the current price list. */
 const TIER_SOURCE = { GT: ['EVE', 'GT'], DGT: ['EVE', 'DGT'], BT: ['EVE', 'BT'], NTW: ['EVE', null], FOSTER: ['FOSTER', null] };
-let gpTierCache = null;
-const gpTierDefs = () => gpTierCache || (gpTierCache = loadGpTiers());
+let gpConfigCache = null;
+const gpConfig = () => gpConfigCache || (gpConfigCache = loadGpConfig());
+const gpTierDefs = () => gpConfig().tiers;
 async function eveProduct(db, date, key) {
   const cur = ((await priceContext(db, date)).EVE || {}).current;
   return cur ? productIn(db, cur.id, 'EVE', key) : null;
@@ -481,13 +482,13 @@ async function customerPriceCheck(ctx, payload) {
     }
     if (use) {
       tierTerms = gpTierTerms(use, rated && rated.gp_rates);
+      // Rate keys only for GP viewers.
+      const codes = (list) => (ctx.user.canSeeGp === true ? ' (' + list.map((t) => t.code).join(', ') + ')' : '');
       const missing = tierTerms.filter((t) => t.defaulted);
-      if (missing.length) flags.push(`ไม่มี GP รายสินค้าใน SMG MASTER (${missing.map((t) => t.code).join(', ')}) — ใช้ค่าเริ่มต้นของ Tier`);
-      // Owner's reading of a 0% cell (price-groups.json marks fee steps, where 0% is normal). Tier codes only for GP viewers.
+      if (missing.length) flags.push(`ไม่มี GP รายสินค้าใน SMG MASTER${codes(missing)} — ใช้ค่าเริ่มต้นของ Tier`);
+      // price-groups.json: gpZeroRateFlag (the owner's reading of a 0% cell); fee steps, where 0% is normal, are skipped.
       const zero = tierTerms.filter((t) => !t.defaulted && !t.fee && t.pct === 0);
-      if (zero.length) {
-        flags.push(`SMG MASTER ไม่ให้ส่วนลด${ctx.user.canSeeGp === true ? ' ' + zero.map((t) => t.code).join(', ') : ''}สำหรับสินค้านี้ — อาจยกเลิก ไม่มีสต็อก หรือไม่ขายในช่องทางนี้ ตรวจสอบก่อนเสนอราคา`);
-      }
+      if (zero.length && gpConfig().zeroRateFlag) flags.push(`SMG MASTER ไม่ให้ส่วนลดสำหรับสินค้านี้${codes(zero)} — ${gpConfig().zeroRateFlag}`);
     }
   }
   const replaced = new Set(((gpTier && gpTierDefs().get(gpTier.used)) || {}).replacesTerms || []);
@@ -513,7 +514,7 @@ async function customerPriceCheck(ctx, payload) {
   if (ctx.user.canSeeGp !== true) {
     // Net prices only: no GP %, amounts or running prices per step (any of them gives the % away).
     out.steps = out.steps.map((s) => ({ seq: s.seq, code: s.code, name: s.name, method: s.method, category: s.category, scope: s.scope,
-      forCustomer: s.forCustomer, gpTier: s.gpTier, defaulted: s.defaulted }));
+      forCustomer: s.forCustomer, gpTier: s.gpTier }));
     delete out.totalDiscount;
     out.gpHidden = true;
   }

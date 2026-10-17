@@ -222,7 +222,10 @@ test('GP % is for the owner and the users the owner grants it to; sales and supe
   assert.equal(z.net, 29990);
   assert.ok(z.flags.some((f) => /^SMG MASTER ไม่ให้ส่วนลดสำหรับสินค้านี้ — อาจยกเลิก ไม่มีสต็อก/.test(f)), z.flags.join('|'));
   assert.ok(!z.flags.some((f) => /T18/.test(f)), 'no tier codes for users without GP');
-  assert.ok((await price(owner, q)).flags.some((f) => /ไม่ให้ส่วนลด T18 ?สำหรับ/.test(f)));
+  assert.ok((await price(owner, q)).flags.some((f) => /ไม่ให้ส่วนลดสำหรับสินค้านี้ \(T18\)/.test(f)));
+  const noRates = await price(sales, { groupCode: 'BT', productKey: 'HOB-TIER' });
+  assert.ok(noRates.flags.some((f) => /^ไม่มี GP รายสินค้าใน SMG MASTER — ใช้ค่าเริ่มต้นของ Tier$/.test(f)) && noRates.steps.every((s) => !('defaulted' in s)),
+    'no rate keys or per-step default marks for users without GP');
   await env.db.query(`update products set gp_rates = gp_rates || '{"BT_MKT": 0, "BT_DC": 0}' where key = 'HOOD-GP'`);
   assert.ok(!(await price(owner, { groupCode: 'BT', productKey: 'HOOD-GP' })).flags.some((f) => /ไม่ให้ส่วนลด/.test(f)), '0% fee steps are normal');
 });
@@ -235,6 +238,8 @@ test('the owner can close menus per user; the server refuses their functions too
   const ownerB = { db: env.db, cfg: Object.assign({}, env.cfg, { owners: ['akrawat@eve.co.th', 'owner.b@eve.co.th'] }), user: { email: 'akrawat@eve.co.th', isOwner: true } };
   await assert.rejects(require('../src/rfq/service').rpc.saveUser(ownerB, { email: 'owner.b@eve.co.th', role: 'SALES' }), /เจ้าของระบบต้องเป็น ADMIN/,
     'one owner cannot demote another');
+  await owner.call('saveUser', { email: 'first.time@eve.co.th', role: 'SALES' });
+  assert.deepEqual(Object.values((await env.db.query(`select can_view_gp, hidden_menus from users where email = 'first.time@eve.co.th'`)).rows[0]), [false, []]);
   const users = await owner.call('listUsers');
   assert.ok(users.menus.some((m) => m.id === 'custprice'));
   const me = users.users.find((u) => u.email === 'akrawat@eve.co.th');

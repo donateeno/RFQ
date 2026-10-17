@@ -26,7 +26,7 @@ function loadPriceGroups(file) {
 function loadGpConfig(file) {
   const raw = JSON.parse(fs.readFileSync(file || CONFIG_FILE, 'utf8'));
   validatePriceGroups(raw);
-  return { tiers: new Map((raw.gpTiers || []).map((t) => [t.code, t])), rateMax: raw.gpRateMax };
+  return { tiers: new Map((raw.gpTiers || []).map((t) => [t.code, t])), rateMax: raw.gpRateMax, zeroRateFlag: raw.gpZeroRateFlag || '' };
 }
 const loadGpTiers = (file) => loadGpConfig(file).tiers;
 
@@ -70,6 +70,7 @@ function validatePriceGroups(raw) {
   });
   const tiers = new Set();
   if (raw.gpTiers && !(typeof raw.gpRateMax === 'number' && raw.gpRateMax > 0 && raw.gpRateMax < 1)) errors.push('gpRateMax must be a fraction between 0 and 1');
+  if (raw.gpZeroRateFlag !== undefined && typeof raw.gpZeroRateFlag !== 'string') errors.push('gpZeroRateFlag must be text');
   (raw.gpTiers || []).forEach((t) => {
     if (!t.code || tiers.has(t.code)) errors.push(`gpTiers: code missing or duplicate: ${t.code}`);
     tiers.add(t.code);

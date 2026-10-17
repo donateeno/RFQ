@@ -34,6 +34,7 @@ function load(env = process.env) {
     const missing = [];
     if (cfg.sessionSecret.length < 32) missing.push('SESSION_SECRET (32+ chars)');
     if (!cfg.googleClientId) missing.push('GOOGLE_CLIENT_ID');
+    if (!cfg.owners.length) missing.push('OWNERS or COST_VIEWERS (who manages users)');
     if (missing.length) throw new Error('Missing required configuration: ' + missing.join(', '));
   } else if (!cfg.sessionSecret) {
     cfg.sessionSecret = 'dev-only-session-secret-change-me-0123456789';
