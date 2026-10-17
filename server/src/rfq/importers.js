@@ -13,6 +13,7 @@
 const { calculate, UserError, PRICE_TIERS, TERM_METHODS, resolveTierPrice } = require('../pricing');
 const { tx } = require('../db');
 const { getSettings, getCatalog, lookupItem } = require('./catalog');
+const { loadGpConfig, loadGpTiers } = require('../seed');
 
 // ---------------------------------------------------------------- parsing helpers
 
@@ -409,8 +410,19 @@ const SMG_SHEETS = {
   sets: { label: "COST UPDATE 2021 for import 'relationship'!A2:AA", cols: {
     ean: [0, 'EAN13'], part1: [2, 'Subset1 Description'], cost1: [3, 'Cost subset1'], part2: [4, 'Subset2 Description'], cost2: [5, 'Cost subset2'],
     part3: [6, ['Subset1 Description', 'Subset3 Description']], cost3: [7, 'Cost subset3'], part4: [8, 'Subset4 Description'], cost4: [9, 'Cost subset4'],
-    total: [10, 'Total Set Cost'], ean2: [26, 'EAN13'] } }
+    total: [10, 'Total Set Cost'], ean2: [26, 'EAN13'] } },
+  // Optional: NON PC wholesale net prices. A = TRUE marks the price the dealer pays; FALSE rows are quantity / condition options.
+  wholesale: { label: "COST UPDATE 2021 for import 'WHOLESALE'!A1:M", cols: {
+    display: [0, 'DisplayinUPC'], ean: [1, 'EAN13'], model: [2, 'MODEL NAME'], desc: [3, 'DESCRIPTION'], net: [12, 'GP DISC.'] } }
 };
+/**
+ * Per-item GP % columns of SMG MASTER (rate key -> column). K–O come with MASTER!A1:R; T, U, V and Y need
+ * MASTER!A1:Y. Each block is checked only when the sheet sends it, so an older n8n range still imports.
+ */
+const MASTER_GP_BLOCKS = [
+  { SCGH: [10, 'ส่วนลด SCGH'], T15: [11, 'ส่วนลดT15'], T18: [12, 'ส่วนลดT18'], T20: [13, 'ส่วนลดT20'], T24: [14, 'ส่วนลดT24'] },
+  { BT_GP: [19, 'ส่วนลด BT'], BT_MKT: [20, 'BT MKT FEE'], BT_DC: [21, 'DC FEE'], DST1: [24, 'DST1 GP'] }
+];
 const SMG_MAKES = ['EVE', 'EVERCOOK', 'EXCEL'];
 const colName = (i) => (i >= 26 ? String.fromCharCode(64 + Math.floor(i / 26)) : '') + String.fromCharCode(65 + (i % 26));
 const normHead = (s) => String(s || '').replace(/\s+/g, ' ').trim().toUpperCase();
@@ -424,10 +436,52 @@ function smgRows(sheets, name) {
     .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ "${cell(head, i)}"`);
   if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับที่ระบบรู้จัก — ${wrong.join('; ')}`);
   return values.slice(1).map((r) => {
-    const o = {};
+    const o = { _row: r || [] };
     for (const [k, [i]] of Object.entries(spec.cols)) o[k] = cell(r, i);
     return o;
   });
+}
+
+/** Which GP rate columns MASTER sent; a block with any header must match in full (a moved column stops the sync). */
+function masterGpColumns(sheets) {
+  const head = (sheets.master && sheets.master[0]) || [];
+  const cols = {};
+  for (const block of MASTER_GP_BLOCKS) {
+    if (!Object.values(block).some(([i]) => cell(head, i))) continue;
+    const wrong = Object.values(block).filter(([i, h]) => normHead(head[i]) !== normHead(h))
+      .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${h}" แต่พบ "${cell(head, i)}"`);
+    if (wrong.length) throw new UserError(`หัวตารางของ ${SMG_SHEETS.master.label} ไม่ตรงกับที่ระบบรู้จัก — ${wrong.join('; ')}`);
+    Object.assign(cols, block);
+  }
+  return cols;
+}
+
+/**
+ * NON PC wholesale prices by barcode: net = GP DISC. of the DisplayinUPC = TRUE row (one per barcode);
+ * FALSE rows become options ("ซื้อ 12 ลด 7%"). Optional range; report lists barcodes only.
+ */
+function wholesalePrices(sheets) {
+  const out = { byEan: new Map(), report: null };
+  if (!sheets || sheets.wholesale === undefined || sheets.wholesale === null) return out;
+  const r = { wholesaleRows: 0, wholesaleDuplicates: [], wholesaleBadRows: 0 };
+  out.report = r;
+  if (Array.isArray(sheets.wholesale) && sheets.wholesale.length < 2) return out;
+  for (const row of smgRows(sheets, 'wholesale')) {
+    if (!row.ean && !row.model) continue;
+    r.wholesaleRows++;
+    const net = price(row.net);
+    if (!isEan(row.ean) || !net) { r.wholesaleBadRows++; continue; }
+    const w = out.byEan.get(row.ean) || { net: null, label: '', options: [] };
+    out.byEan.set(row.ean, w);
+    if (row.display.toUpperCase() === 'TRUE') {
+      if (w.net !== null) { if (r.wholesaleDuplicates.length < 50) r.wholesaleDuplicates.push(row.ean); continue; }
+      w.net = net;
+      w.label = row.desc.slice(0, 120);
+    } else if (w.options.length < 10) {
+      w.options.push({ label: row.desc.slice(0, 120), net });
+    }
+  }
+  return out;
 }
 
 const isEan = (s) => /^\d{8,14}$/.test(s);
@@ -480,7 +534,11 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
   const masterRows = smgRows(sheets, 'master');
   const hotRows = smgRows(sheets, 'hot');
   const sets = setCosts(sheets);
-  const report = { costRows: 0, notForSale: 0, blankSaleStatus: 0, duplicateBarcodes: [], badBarcodes: 0 };
+  const gpCols = masterGpColumns(sheets);
+  const gpRateMax = loadGpConfig().rateMax;
+  const wholesale = wholesalePrices(sheets);
+  const report = { costRows: 0, notForSale: 0, blankSaleStatus: 0, duplicateBarcodes: [], badBarcodes: 0,
+    gpColumns: Object.keys(gpCols), gpRated: 0, gpBadRates: [] };
 
   const first = (rows, keep) => {
     const m = new Map();
@@ -524,6 +582,17 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
     const base = n ? price(n.promotion) : (m ? price(m.oldSpecial) : null);
     if (!unitCost && !base && PRICE_TIERS.every((t) => !tiers[t])) { skipped++; continue; }
     if (m && PRICE_TIERS.some((t) => (price(m[t]) || null) !== tiers[t]) && mismatches.length < 100) mismatches.push(ean);
+    let gpRates = null;
+    if (m) {
+      for (const [k, [i]] of Object.entries(gpCols)) {
+        const raw = cell(m._row, i);
+        if (!raw || raw === '-') continue;
+        // n8n reads formatted values: "18%" / "18.00%". A bare number (0.18? 18?) is ambiguous, so it is listed, not guessed.
+        const v = raw.endsWith('%') ? toNum(raw) : null;
+        if (v === null || v < 0 || v > gpRateMax) { if (report.gpBadRates.length < 50 && !report.gpBadRates.includes(ean)) report.gpBadRates.push(ean); continue; }
+        (gpRates = gpRates || {})[k] = v;
+      }
+    }
     let key = models.get(ean) || (m && m.name) || (n && n.name) || (h && h.name) || ean;
     key = key.slice(0, 190);
     if (usedKeys.has(key.toUpperCase())) key = `${key} [${ean}]`;
@@ -532,7 +601,8 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
       key, name: (n && n.name) || (m && m.name) || (h && h.name) || key, barcode: ean,
       make: ((n && n.brand) || (m && m.brand) || 'EVE').toUpperCase(), category: (m && m.group) || (n && n.category) || '',
       status: n ? n.status.toUpperCase() : '', saleChannel: h ? h.saleCh : '', priceCat: n ? n.priceCat.toUpperCase() : '',
-      listPrice: n ? price(n.normal) : null, cost: unitCost, fromSet, normalPrice: base, tiers
+      listPrice: n ? price(n.normal) : null, cost: unitCost, fromSet, normalPrice: base, tiers, gpRates,
+      wholesale: wholesale.byEan.get(ean) || null
     });
   }
 
@@ -542,19 +612,29 @@ async function importSmgCatalog(db, sheets, priceList, today, user, futureOnly) 
     for (const p of products) {
       await c.query(
         `insert into products (price_list_id, brand, key, name, cost, normal_price, source, barcode, make, category, status, sale_channel,
-           price_cat, list_price, price_gt, price_dgt, price_bt, tiered, updated_at)
-         values ($1, 'EVE', $2, $3, $4, $5, 'SMG', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true, now())
+           price_cat, list_price, price_gt, price_dgt, price_bt, gp_rates, wholesale, tiered, updated_at)
+         values ($1, 'EVE', $2, $3, $4, $5, 'SMG', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, true, now())
          on conflict (price_list_id, brand, key_norm) do update set name = excluded.name, cost = excluded.cost, normal_price = excluded.normal_price,
            source = 'SMG', barcode = excluded.barcode, make = excluded.make, category = excluded.category, status = excluded.status,
            sale_channel = excluded.sale_channel, price_cat = excluded.price_cat, list_price = excluded.list_price, price_gt = excluded.price_gt,
-           price_dgt = excluded.price_dgt, price_bt = excluded.price_bt, tiered = true, updated_at = now()`,
+           price_dgt = excluded.price_dgt, price_bt = excluded.price_bt, gp_rates = excluded.gp_rates, wholesale = excluded.wholesale,
+           tiered = true, updated_at = now()`,
         [pl2.id, p.key, p.name, p.cost, p.normalPrice, p.barcode, p.make, p.category, p.status, p.saleChannel, p.priceCat, p.listPrice,
-          p.tiers.GT, p.tiers.DGT, p.tiers.BT]);
+          p.tiers.GT, p.tiers.DGT, p.tiers.BT, p.gpRates, p.wholesale]);
     }
     return pl2;
   });
   const statuses = {};
   products.forEach((p) => { statuses[p.status || '-'] = (statuses[p.status || '-'] || 0) + 1; });
+  report.gpRated = products.filter((p) => p.gpRates).length;
+  if (wholesale.report) {
+    const imported = new Set(products.map((p) => p.barcode));
+    const notIn = [...wholesale.byEan.keys()].filter((e) => !imported.has(e));
+    Object.assign(report, wholesale.report, {
+      wholesaleUsed: products.filter((p) => p.wholesale && p.wholesale.net).length,
+      wholesaleNotInCatalogue: notIn.length, wholesaleNotInCatalogueList: notIn.slice(0, 50)
+    });
+  }
   if (sets.report) {
     const imported = new Set(products.map((p) => p.barcode));
     const notIn = [...sets.costs.keys()].filter((e) => !imported.has(e));
@@ -599,7 +679,7 @@ function mappingRows(sheets, name) {
     .map(([i, h]) => `คอลัมน์ ${colName(i)} ต้องเป็น "${[].concat(h)[0]}" แต่พบ "${cell(head, i)}"`);
   if (wrong.length) throw new UserError(`หัวตารางของ ${spec.label} ไม่ตรงกับแม่แบบ — ${wrong.join('; ')}`);
   return values.slice(1).map((r) => {
-    const o = {};
+    const o = { _row: r || [] };
     for (const [k, [i]] of Object.entries(spec.cols)) o[k] = cell(r, i);
     return o;
   });
@@ -621,13 +701,18 @@ async function importCustomerPricing(db, sheets) {
     if (!terms.has(code)) terms.set(code, Object.assign({}, r, { code, method }));
   });
   const groups = new Map();
+  // Optional column "GP Tier …" (I): per-item GP from SMG MASTER, see price-groups.json gpTiers.
+  const gpTierCol = ((sheets.groups && sheets.groups[0]) || []).findIndex((h) => normHead(h).startsWith('GP TIER'));
+  const gpTiers = loadGpTiers();
   mappingRows(sheets, 'groups').forEach((r, i) => {
     const code = upper(r.code);
     if (!code) return;
     const tier = upper(r.tier);
     if (tier && !PRICE_TIER_CODES.includes(tier)) { errors.push(`Customer Groups แถว ${i + 2}: ${code} ราคาฐาน "${r.tier}" ไม่ถูกต้อง`); return; }
+    let gpTier = gpTierCol >= 0 ? upper(cell(r._row, gpTierCol)) : '';
+    if (gpTier && !gpTiers.has(gpTier)) { errors.push(`Customer Groups แถว ${i + 2}: ${code} GP Tier "${gpTier}" ไม่ถูกต้อง (ใช้ได้: ${[...gpTiers.keys()].join(', ')})`); gpTier = ''; }
     const credit = toNum(r.credit);
-    if (!groups.has(code)) groups.set(code, Object.assign({}, r, { code, tier, credit: credit === null ? null : Math.round(credit) }));
+    if (!groups.has(code)) groups.set(code, Object.assign({}, r, { code, tier, gpTier, credit: credit === null ? null : Math.round(credit) }));
   });
   const groupTerms = [];
   mappingRows(sheets, 'groupTerms').forEach((r, i) => {
@@ -669,8 +754,8 @@ async function importCustomerPricing(db, sheets) {
       [t.code, t.name, t.nameEn, t.category, t.method, t.basis, t.borneBy, t.onInvoice, t.inMuNet, t.reference, t.source]);
     }
     for (const g of groups.values()) {
-      await c.query('insert into customer_groups (code, name, price_tier, credit_days, approver, note) values ($1, $2, $3, $4, $5, $6)',
-        [g.code, g.name, g.tier, g.credit, g.approver, g.note]);
+      await c.query('insert into customer_groups (code, name, price_tier, gp_tier, credit_days, approver, note) values ($1, $2, $3, $4, $5, $6, $7)',
+        [g.code, g.name, g.tier, g.gpTier, g.credit, g.approver, g.note]);
     }
     for (const t of groupTerms) {
       await c.query(`insert into group_terms (owner_code, seq, term_code, pct, thb, scope, valid_from, valid_to, note)

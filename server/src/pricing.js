@@ -138,6 +138,8 @@ class UserError extends Error {
 }
 
 const PRICE_TIERS = ['GT', 'DGT', 'BT'];
+/** Per-item GP rates read from SMG MASTER (key -> column): K, L, M, N, O, T, U, V, Y. */
+const GP_RATE_KEYS = ['SCGH', 'T15', 'T18', 'T20', 'T24', 'BT_GP', 'BT_MKT', 'BT_DC', 'DST1'];
 
 /**
  * Selling price of one product for one channel tier, as SMG MASTER columns H (GT), I (DGT) and R (BT) set it:
@@ -181,4 +183,16 @@ function applyTerms(gross, qty, terms) {
   return { steps, net: round(price, 2), totalDiscount: gross > 0 ? round(1 - price / gross, 6) : 0 };
 }
 
-module.exports = { INDICATOR, FORMULAS, COST_SOURCES, PRICE_TIERS, TERM_METHODS, resolveTierPrice, applyTerms, round, netIncVat, indicatorFor, muBand, calculate, landedCost, roundUpTo, resolveDiscounts, UserError };
+/**
+ * Terms of a customer group's GP tier (price-groups.json gpTiers) for one item, for applyTerms: each step takes
+ * the item's own rate from SMG MASTER (gpRates[step.rate]) or the tier's default (flagged `defaulted`); steps compound.
+ */
+function gpTierTerms(tier, gpRates) {
+  return ((tier && tier.steps) || []).map((s) => {
+    const own = gpRates && typeof gpRates[s.rate] === 'number' ? gpRates[s.rate] : null;
+    return { seq: 0, code: s.rate, name: s.label, method: 'PCT_RUNNING', category: 'GP', pct: own === null ? s.default : own, thb: 0,
+      scope: '', note: '', gpTier: true, defaulted: own === null };
+  });
+}
+
+module.exports = { INDICATOR, FORMULAS, COST_SOURCES, PRICE_TIERS, GP_RATE_KEYS, TERM_METHODS, resolveTierPrice, applyTerms, gpTierTerms, round, netIncVat, indicatorFor, muBand, calculate, landedCost, roundUpTo, resolveDiscounts, UserError };

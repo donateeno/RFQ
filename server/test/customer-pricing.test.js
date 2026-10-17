@@ -135,3 +135,54 @@ test('no price → type the gross price; no group → clear error', async () => 
   await assert.rejects(price(sales, { customerCode: '999999', productKey: 'HOB-TIER' }), /ไม่พบรหัสลูกค้า/);
   await assert.rejects(price(sales, { groupCode: 'BT', productKey: 'HOB-TIER', qty: 0 }), /จำนวน/);
 });
+
+test('GP tier per group: per-item GP from SMG MASTER, BT compounding, T24 + Exw, NON PC wholesale with T20 fallback', async () => {
+  // HOOD HI-HEE89-90 numbers from SMG MASTER OCT26-JAN27 and the partner price sheet; HP30-1BB/MSE from WHOLESALE (590 × 0.85)
+  const add = (key, ean, gt, dgt, bt, rates, wholesale) => env.db.query(`insert into products (price_list_id, brand, key, name, cost, normal_price, source, barcode,
+      status, price_gt, price_dgt, price_bt, tiered, gp_rates, wholesale)
+    select id, 'EVE', $1, $1, 100, $3, 'SMG', $2, 'S', $3, $4, $5, true, $6, $7 from price_lists where name = 'APR26'`,
+  [key, ean, gt, dgt, bt, rates && JSON.stringify(rates), wholesale && JSON.stringify(wholesale)]);
+  await add('HOOD-GP', '2000000000208', 29990, 34590, 9990, { T15: 0.15, T18: 0.18, T20: 0.2, T24: 0.24, BT_GP: 0.15, BT_MKT: 0.05, BT_DC: 0.0504, DST1: 0.33 });
+  await add('HP30-NONPC', '2000000000215', 590, 590, 590, { T20: 0.2 }, { net: 501.5, label: 'ราคาส่ง', options: [{ label: 'ซื้อ 12 ชิ้นขึ้นไป', net: 480 }] });
+
+  const s = sheets();
+  s.terms.push(term('EXW', 'ส่วนลด Exw', 'PCT_RUNNING'));
+  s.groups = s.groups.map((r, i) => r.concat([i === 0 ? 'GP Tier (GP รายสินค้าจาก SMG MASTER)' : r[0] === 'BT' ? 'BT' : '']));
+  s.groups.push(['DEALER_T18', 'ดีลเลอร์ T18', 'GT', '30', '', '', '', '', 'T18'], ['SOUVANNY_T24', 'Souvanny', 'GT', '', '', '', '', '', 't24'],
+    ['DEALER_ONLINE', 'ดีลเลอร์ออนไลน์', 'DGT', '', '', '', '', '', 'DST1'], ['DEALER_NOPC', 'ดีลเลอร์ไม่มี PC', 'GT', '', '', '', '', '', 'NONPC'],
+    ['BADTIER', 'GP Tier ผิด', 'GT', '', '', '', '', '', 'T99'], ['NOPC_NOTIER', 'Non-PC ไม่มีราคาฐาน', '', '', '', '', '', '', 'NONPC']);
+  s.groupTerms.push(gterm('SOUVANNY_T24', 2, 'EXW', '3.00%'), gterm('NOPC_NOTIER', 5, 'CASH_DISC', '2.00%'));
+  const r = await sync(s);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.data.errors.some((e) => /BADTIER GP Tier "T99" ไม่ถูกต้อง/.test(e)), r.body.data.errors.join('|'));
+  const boot = await sales.call('getBootstrap');
+  assert.equal(boot.customerGroups.find((g) => g.code === 'SOUVANNY_T24').gpTier, 'T24');
+  assert.equal(boot.customerGroups.find((g) => g.code === 'BADTIER').gpTier, '', 'unknown tier: loaded without one');
+
+  const t18 = await price(sales, { groupCode: 'DEALER_T18', productKey: 'HOOD-GP' });
+  assert.deepEqual([t18.gross, t18.net, t18.gpTier.code], [29990, 24591.8, 'T18']);
+  assert.deepEqual(t18.steps.map((x) => [x.code, x.pct, x.gpTier, x.defaulted]), [['T18', 0.18, true, false]]);
+  const t24 = await price(sales, { groupCode: 'SOUVANNY_T24', productKey: 'HOOD-GP' });
+  assert.deepEqual(t24.steps.map((x) => [x.code, x.after]), [['T24', 22792.4], ['EXW', 22108.63]], '24% then Exw 3%');
+  const online = await price(sales, { groupCode: 'DEALER_ONLINE', productKey: 'HOOD-GP' });
+  assert.deepEqual([online.gross, online.net], [34590, 23175.3]);
+
+  const bt = await price(sales, { groupCode: 'BT', productKey: 'HOOD-GP' });
+  assert.deepEqual(bt.steps.map((x) => [x.code, x.after]), [['BT_GP', 8491.5], ['BT_MKT', 8066.93], ['BT_DC', 7660.35]], 'the tier replaces the BT group terms');
+  assert.deepEqual([bt.net, bt.netExVat], [7660.35, 7159.21]);
+  const btDefault = await price(sales, { groupCode: 'BT', productKey: 'HOB-TIER' });
+  assert.equal(btDefault.net, 1147.5, 'no item rates: 20% × 5% × 5.04% as today');
+  assert.ok(btDefault.steps.every((x) => x.defaulted) && btDefault.flags.some((f) => /ใช้ค่าเริ่มต้นของ Tier/.test(f)));
+
+  const nonpc = await price(sales, { groupCode: 'DEALER_NOPC', productKey: 'HP30-NONPC', qty: 2 });
+  assert.deepEqual(nonpc.steps.map((x) => [x.code, x.deduction, x.after]), [['WHOLESALE', 88.5, 501.5]]);
+  assert.deepEqual([nonpc.net, nonpc.total, nonpc.gpTier.used], [501.5, 1003, 'NONPC']);
+  assert.deepEqual(nonpc.gpTier.wholesale.options, [{ label: 'ซื้อ 12 ชิ้นขึ้นไป', net: 480 }]);
+  const fallback = await price(sales, { groupCode: 'DEALER_NOPC', productKey: 'HOOD-GP' });
+  assert.deepEqual([fallback.net, fallback.gpTier.used, fallback.gpTier.fallback], [23992, 'T20', true], 'not in WHOLESALE: T20');
+  assert.ok(fallback.flags.some((f) => /ไม่มีในใบราคา Non-PC/.test(f)));
+  const noTier = await price(sales, { groupCode: 'NOPC_NOTIER', productKey: 'HP30-NONPC' });
+  assert.deepEqual([noTier.gross, noTier.grossSource, noTier.net], [501.5, 'wholesale', 491.47], 'no price tier: the wholesale price is still found');
+  assert.deepEqual(noTier.steps.map((x) => [x.code, x.after]), [['CASH_DISC', 491.47]], 'group terms apply after the wholesale net, as after any tier');
+  for (const x of [t18, bt, nonpc, fallback]) assert.ok(!/cost|"mu"|gain/i.test(JSON.stringify(x)), 'GP % and net prices, never cost');
+});

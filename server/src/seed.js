@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { FORMULAS, COST_SOURCES, PRICE_TIERS } = require('./pricing');
+const { FORMULAS, COST_SOURCES, PRICE_TIERS, GP_RATE_KEYS } = require('./pricing');
 const { tx } = require('./db');
 
 const DEFAULT_SETTINGS = [
@@ -14,11 +14,21 @@ const DEFAULT_SETTINGS = [
   ['PRICE_CHECK_PER_HOUR', 300, 'จำนวนครั้งตรวจราคาสูงสุดต่อผู้ใช้ต่อชั่วโมง']
 ];
 
+const CONFIG_FILE = path.join(__dirname, '..', 'config', 'price-groups.json');
+
 function loadPriceGroups(file) {
-  const raw = JSON.parse(fs.readFileSync(file || path.join(__dirname, '..', 'config', 'price-groups.json'), 'utf8'));
+  const raw = JSON.parse(fs.readFileSync(file || CONFIG_FILE, 'utf8'));
   validatePriceGroups(raw);
   return raw.groups;
 }
+
+/** GP tiers of customer groups (price-groups.json "gpTiers" as a Map code -> tier) and the highest GP rate the import accepts. */
+function loadGpConfig(file) {
+  const raw = JSON.parse(fs.readFileSync(file || CONFIG_FILE, 'utf8'));
+  validatePriceGroups(raw);
+  return { tiers: new Map((raw.gpTiers || []).map((t) => [t.code, t])), rateMax: raw.gpRateMax };
+}
+const loadGpTiers = (file) => loadGpConfig(file).tiers;
 
 /** Fails fast (and in CI) on a malformed price-groups.json. */
 function validatePriceGroups(raw) {
@@ -57,6 +67,30 @@ function validatePriceGroups(raw) {
         if ((d.min ?? 0) > d.default || d.default > (d.max ?? 0.99)) errors.push(`${c.id}: ${d.label} default outside min/max`);
       });
     });
+  });
+  const tiers = new Set();
+  if (raw.gpTiers && !(typeof raw.gpRateMax === 'number' && raw.gpRateMax > 0 && raw.gpRateMax < 1)) errors.push('gpRateMax must be a fraction between 0 and 1');
+  (raw.gpTiers || []).forEach((t) => {
+    if (!t.code || tiers.has(t.code)) errors.push(`gpTiers: code missing or duplicate: ${t.code}`);
+    tiers.add(t.code);
+    if (t.netPrice !== undefined) {
+      if (t.netPrice !== 'WHOLESALE') errors.push(`gpTiers ${t.code}: netPrice must be "WHOLESALE"`);
+      if (!t.fallback) errors.push(`gpTiers ${t.code}: a netPrice tier needs a fallback tier`);
+      return;
+    }
+    if (!(t.steps || []).length) errors.push(`gpTiers ${t.code}: steps required`);
+    if (t.replacesTerms !== undefined && !(Array.isArray(t.replacesTerms) && t.replacesTerms.every((c) => typeof c === 'string' && c && c === c.trim().toUpperCase()))) {
+      errors.push(`gpTiers ${t.code}: replacesTerms must be a list of upper-case term codes`);
+    }
+    (t.steps || []).forEach((s) => {
+      if (!GP_RATE_KEYS.includes(s.rate)) errors.push(`gpTiers ${t.code}: rate must be one of ${GP_RATE_KEYS}`);
+      if (!s.label || typeof s.default !== 'number' || s.default < 0 || s.default >= 1) errors.push(`gpTiers ${t.code}: bad step ${JSON.stringify(s)}`);
+    });
+  });
+  (raw.gpTiers || []).forEach((t) => {
+    if (t.fallback === undefined) return;
+    const f = (raw.gpTiers || []).find((x) => x.code === t.fallback);
+    if (!f || f.netPrice !== undefined) errors.push(`gpTiers ${t.code}: fallback must be a tier with steps: ${t.fallback}`);
   });
   if (errors.length) throw new Error('price-groups.json is invalid:\n- ' + errors.join('\n- '));
 }
@@ -110,4 +144,4 @@ async function seed(pool, cfg, groups) {
   });
 }
 
-module.exports = { seed, loadPriceGroups, validatePriceGroups };
+module.exports = { seed, loadPriceGroups, loadGpConfig, loadGpTiers, validatePriceGroups };

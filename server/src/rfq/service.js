@@ -7,11 +7,12 @@
  *              SUPERVISOR  + net prices and the MU band (e.g. "20–25%"), never cost/gain/exact %MU
  *              cost viewer + cost, gain, exact %MU   (users.can_view_cost, set from COST_VIEWERS env only)
  */
-const { calculate, resolveDiscounts, round, muBand, INDICATOR, PRICE_TIERS, applyTerms, UserError } = require('../pricing');
+const { calculate, resolveDiscounts, round, muBand, INDICATOR, PRICE_TIERS, applyTerms, gpTierTerms, UserError } = require('../pricing');
 const { tx } = require('../db');
 const { getSettings, getCatalog, getChannel, lookupItem, landedFromRow, priceContext, productIn } = require('./catalog');
 const { importData, parseCsv } = require('./importers');
 const notifyMsg = require('./notifications');
+const { loadGpTiers } = require('../seed');
 
 const STATUS = { PENDING: 'Pending', APPROVED: 'Approved', REJECTED: 'Rejected', CANCELLED: 'Cancelled', CLOSED: 'Closed' };
 const DISPLAY_STATUSES = ['Pending', 'Approved', 'Expired', 'Rejected', 'Cancelled', 'Closed'];
@@ -228,8 +229,8 @@ async function getBootstrap(ctx) {
     groups: catalog.map((g) => ({ id: g.id, name: g.name, description: g.description, costSource: g.costSource, channels: g.channels })),
     settings: { defaultValidityDays: settings.DEFAULT_VALIDITY_DAYS, maxValidityDays: settings.MAX_VALIDITY_DAYS },
     products, bundles, projects, landed, customers, priceLists, today,
-    customerGroups: (await db.query('select code, name, price_tier from customer_groups order by code')).rows
-      .map((g) => ({ code: g.code, name: g.name, tier: g.price_tier }))
+    customerGroups: (await db.query('select code, name, price_tier, gp_tier from customer_groups order by code')).rows
+      .map((g) => ({ code: g.code, name: g.name, tier: g.price_tier, gpTier: g.gp_tier || '' }))
   };
   if (out.user.canApprove) {
     out.pendingCount = Number((await db.query(`select count(*) from requests where status = 'Pending'`)).rows[0].count);
@@ -351,6 +352,12 @@ async function searchCustomers(ctx, q) {
 
 /** Price tier → where the gross price comes from in the current price list. */
 const TIER_SOURCE = { GT: ['EVE', 'GT'], DGT: ['EVE', 'DGT'], BT: ['EVE', 'BT'], NTW: ['EVE', null], FOSTER: ['FOSTER', null] };
+let gpTierCache = null;
+const gpTierDefs = () => gpTierCache || (gpTierCache = loadGpTiers());
+async function eveProduct(db, date, key) {
+  const cur = ((await priceContext(db, date)).EVE || {}).current;
+  return cur ? productIn(db, cur.id, 'EVE', key) : null;
+}
 
 /**
  * "What does customer X pay for product Y?": customer → group (own override, else its SAP channel's
@@ -382,23 +389,35 @@ async function customerPriceCheck(ctx, payload) {
   if (!groupCode) throw new UserError('กรุณาเลือกลูกค้าหรือกลุ่มลูกค้า');
   const g = (await db.query('select * from customer_groups where code = $1', [groupCode])).rows[0];
   if (!g) throw new UserError('ไม่พบกลุ่มลูกค้า ' + groupCode, 404);
-  const group = { code: g.code, name: g.name, tier: g.price_tier, creditDays: g.credit_days };
+  const group = { code: g.code, name: g.name, tier: g.price_tier, gpTier: g.gp_tier || '', creditDays: g.credit_days };
 
   const key = str(payload.productKey, 200);
   if (!key) throw new UserError('กรุณาระบุสินค้า');
   let product = null;
+  let row = null;
   let gross = null;
   const src = TIER_SOURCE[g.price_tier];
   if (src) {
     const pc = (await priceContext(db, date))[src[0]] || {};
-    const p = pc.current ? await productIn(db, pc.current.id, src[0], key) : null;
-    if (p) {
-      gross = p.tiered && src[1] ? p['price_' + src[1].toLowerCase()] : p.normal_price;
-      product = { key: p.key, name: p.name, barcode: p.barcode || '', status: p.status || '', saleChannel: p.sale_channel || '', listPrice: p.list_price, priceList: pc.current.name };
+    row = pc.current ? await productIn(db, pc.current.id, src[0], key) : null;
+    if (row) {
+      gross = row.tiered && src[1] ? row['price_' + src[1].toLowerCase()] : row.normal_price;
+      product = { key: row.key, name: row.name, barcode: row.barcode || '', status: row.status || '', saleChannel: row.sale_channel || '', listPrice: row.list_price, priceList: pc.current.name };
     }
   }
   const flags = [];
   let grossSource = 'catalog';
+  // GP tier of the group: per-item GP from SMG MASTER, or (NONPC) the wholesale net price with a fallback tier.
+  const tierDef = g.gp_tier ? gpTierDefs().get(g.gp_tier) : null;
+  if (g.gp_tier && !tierDef) flags.push(`GP Tier ${g.gp_tier} ไม่มีในระบบ — คิดเฉพาะเงื่อนไขของกลุ่ม`);
+  // A group whose price tier has no EVE price (blank, JS) still gets the item's GP rates / wholesale price.
+  const lookUpEve = tierDef && !row && !(src && src[0] === 'EVE');
+  const rated = lookUpEve ? await eveProduct(db, date, key) : row;
+  const wholesale = tierDef && tierDef.netPrice === 'WHOLESALE' && rated && rated.wholesale && rated.wholesale.net > 0 ? rated.wholesale : null;
+  if (!(gross > 0) && wholesale) {
+    gross = wholesale.net;
+    grossSource = 'wholesale';
+  }
   if (!(gross > 0)) {
     const typed = num(payload.grossPrice);
     if (!(typed > 0)) {
@@ -413,6 +432,35 @@ async function customerPriceCheck(ctx, payload) {
   }
   if (product && STATUS_FLAGS[product.status]) flags.push(STATUS_FLAGS[product.status]);
 
+  let gpTier = null;
+  let tierTerms = [];
+  if (tierDef) {
+    let use = tierDef;
+    gpTier = { code: tierDef.code, used: tierDef.code, fallback: false, wholesale: null };
+    if (tierDef.netPrice === 'WHOLESALE') {
+      use = null;
+      if (wholesale) {
+        gpTier.wholesale = { label: wholesale.label || '', net: wholesale.net, options: wholesale.options || [] };
+        if (round(gross - wholesale.net, 2) !== 0) {
+          tierTerms = [{ seq: 0, code: 'WHOLESALE', name: 'ราคาส่ง Non-PC (ใบราคา WHOLESALE)', method: 'THB_UNIT', category: 'GP', pct: 0,
+            thb: round(gross - wholesale.net, 2), scope: '', note: '', gpTier: true, defaulted: false }];
+        }
+        if (wholesale.net > gross) flags.push('ราคาส่ง Non-PC สูงกว่าราคาตั้ง — ตรวจใบราคา WHOLESALE');
+      } else {
+        use = gpTierDefs().get(tierDef.fallback);
+        gpTier.used = use.code;
+        gpTier.fallback = true;
+        flags.push(`ไม่มีในใบราคา Non-PC (WHOLESALE) — ใช้ GP Tier ${use.code} แทน`);
+      }
+    }
+    if (use) {
+      tierTerms = gpTierTerms(use, rated && rated.gp_rates);
+      const missing = tierTerms.filter((t) => t.defaulted);
+      if (missing.length) flags.push(`ไม่มี GP รายสินค้าใน SMG MASTER (${missing.map((t) => t.code).join(', ')}) — ใช้ค่าเริ่มต้นของ Tier`);
+    }
+  }
+  const replaced = new Set(((gpTier && gpTierDefs().get(gpTier.used)) || {}).replacesTerms || []);
+
   const scopeKeys = [key.toUpperCase(), product ? product.key.toUpperCase() : '', product ? product.barcode : ''].filter(Boolean);
   const terms = (await db.query(
     `select t.seq, t.term_code, t.pct, t.thb, t.scope, t.note, t.owner_code, p.name, p.method, p.category
@@ -423,11 +471,12 @@ async function customerPriceCheck(ctx, payload) {
      order by t.seq, t.id`,
     [[group.code, customer ? customer.code.toUpperCase() : ''].filter(Boolean), scopeKeys, date])).rows
     .map((t) => ({ seq: t.seq, code: t.term_code, name: t.name, method: t.method, category: t.category, pct: t.pct, thb: t.thb,
-      scope: t.scope, note: t.note, forCustomer: !!customer && t.owner_code.toUpperCase() === customer.code.toUpperCase() }));
-  const w = applyTerms(gross, qty, terms);
+      scope: t.scope, note: t.note, forCustomer: !!customer && t.owner_code.toUpperCase() === customer.code.toUpperCase() }))
+    .filter((t) => !replaced.has(t.code.toUpperCase()));
+  const w = applyTerms(gross, qty, tierTerms.concat(terms));
   const vat = (await getSettings(db)).VAT_RATE;
   return {
-    date, qty, customer, group, product, productKey: product ? product.key : key, gross, grossSource, flags,
+    date, qty, customer, group, product, productKey: product ? product.key : key, gross, grossSource, flags, gpTier,
     steps: w.steps, net: w.net, netExVat: round(w.net / (1 + vat), 2), total: round(w.net * qty, 2), totalDiscount: w.totalDiscount, vatRate: vat
   };
 }
@@ -734,7 +783,10 @@ async function catalogSyncStatus(db) {
     duplicateBarcodes: d.duplicateBarcodes || [], badBarcodes: d.badBarcodes || 0,
     sets: d.setRows !== undefined, setRows: d.setRows || 0, setCostUsed: d.setCostUsed || 0, setNoBarcode: d.setNoBarcode || 0,
     setNoTotal: d.setNoTotal || [], setZeroPart: d.setZeroPart || [], setSumMismatch: d.setSumMismatch || [], setConflict: d.setConflict || [],
-    setNotInCatalogue: d.setNotInCatalogue || 0
+    setNotInCatalogue: d.setNotInCatalogue || 0,
+    gpColumns: d.gpColumns || [], gpRated: d.gpRated || 0, gpBadRates: d.gpBadRates || [],
+    wholesale: d.wholesaleRows !== undefined, wholesaleRows: d.wholesaleRows || 0, wholesaleUsed: d.wholesaleUsed || 0,
+    wholesaleBadRows: d.wholesaleBadRows || 0, wholesaleDuplicates: d.wholesaleDuplicates || [], wholesaleNotInCatalogue: d.wholesaleNotInCatalogue || 0
   };
 }
 

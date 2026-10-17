@@ -6,7 +6,24 @@
     "formula: MULTIPLY = special x (1-d1)(1-d2)(1-d3) | GP_ON_NORMAL = normal x (1-d1)(1-d2)(1-d3) - (normal - special)",
     "indicatorRules: checked in order; 'below' = strictly less than, 'upTo' = less than or equal; anything above the last rule is OKAY",
     "discount: label, default, min, max (fractions, 0.2 = 20%), editable. Non-editable discounts are always the default.",
-    "priceTier (PRODUCT channels): which SMG MASTER selling price the channel uses — GT (col H), DGT (col I, online) or BT (col R). Products without a hot price use the Nationwide promotion price."
+    "priceTier (PRODUCT channels): which SMG MASTER selling price the channel uses — GT (col H), DGT (col I, online) or BT (col R). Products without a hot price use the Nationwide promotion price.",
+    "gpTiers: GP tier of a customer group (Customer Price Mapping, Customer Groups column I). Each step takes the item's own rate from SMG MASTER (rate key = column: SCGH K, T15 L, T18 M, T20 N, T24 O, BT_GP T, BT_MKT U, BT_DC V, DST1 Y) and falls back to 'default' when the item has none; steps compound (PCT_RUNNING). replacesTerms: Group Terms the tier replaces. NONPC: the wholesale net price (cost file tab WHOLESALE, GP DISC. of the DisplayinUPC = TRUE row); items not in that list use the 'fallback' tier.",
+    "gpRateMax: a GP % above this in SMG MASTER is treated as a typo: skipped (tier default used) and listed in the sync report."
+  ],
+  "gpRateMax": 0.6,
+  "gpTiers": [
+    { "code": "T15", "steps": [{ "rate": "T15", "label": "ส่วนลดดีลเลอร์ T15", "default": 0.15 }] },
+    { "code": "T18", "steps": [{ "rate": "T18", "label": "ส่วนลดดีลเลอร์ T18", "default": 0.18 }] },
+    { "code": "T20", "steps": [{ "rate": "T20", "label": "ส่วนลดดีลเลอร์ T20", "default": 0.20 }] },
+    { "code": "T20_LA", "steps": [{ "rate": "T20", "label": "ส่วนลดดีลเลอร์ T20 (สปป. ลาว)", "default": 0.20 }] },
+    { "code": "T24", "steps": [{ "rate": "T24", "label": "ส่วนลดดีลเลอร์ T24", "default": 0.24 }] },
+    { "code": "SCGH", "steps": [{ "rate": "SCGH", "label": "GP SCG Home", "default": 0.20 }] },
+    { "code": "DST1", "steps": [{ "rate": "DST1", "label": "GP Dropship (DST1)", "default": 0.35 }] },
+    { "code": "BT", "replacesTerms": ["BT_GP", "BT_MKT", "DC_FEE"], "steps": [
+      { "rate": "BT_GP", "label": "ส่วนลด BT", "default": 0.20 },
+      { "rate": "BT_MKT", "label": "ค่าการตลาด BT (MKT fee)", "default": 0.05 },
+      { "rate": "BT_DC", "label": "ค่าศูนย์กระจายสินค้า (DC fee)", "default": 0.0504 }] },
+    { "code": "NONPC", "netPrice": "WHOLESALE", "fallback": "T20" }
   ],
   "groups": [
     {

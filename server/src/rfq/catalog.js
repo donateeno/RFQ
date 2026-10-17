@@ -3,7 +3,7 @@
 const { landedCost, UserError } = require('../pricing');
 
 const PRODUCT_COLS = `key, name, cost, normal_price, barcode, make, category, status, sale_channel, price_cat, list_price,
-  price_gt, price_dgt, price_bt, tiered`;
+  price_gt, price_dgt, price_bt, tiered, gp_rates, wholesale`;
 
 async function getSettings(db) {
   const { rows } = await db.query('select key, value from settings');

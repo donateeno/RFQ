@@ -451,7 +451,7 @@
       '<div class="grid-2"><div class="card"><div class="fields">' +
       '<div class="field wide"><label for="cp-cust">ลูกค้า (รหัสหรือชื่อ)</label><input type="search" id="cp-cust" list="dl-cp-cust" autocomplete="off" placeholder="พิมพ์รหัส SAP หรือชื่อลูกค้า…" value="' + esc(c.customer) + '"><div class="hint" id="cp-cust-info"></div></div>' +
       '<div class="field wide"><label for="cp-group">หรือกลุ่มลูกค้า (เมื่อไม่ระบุลูกค้า)</label><select id="cp-group"><option value="">– เลือกกลุ่ม –</option>' +
-        groups.map(function (g) { return '<option value="' + esc(g.code) + '"' + (g.code === c.group ? ' selected' : '') + '>' + esc(g.code + ' · ' + g.name) + (g.tier ? ' (' + esc(g.tier) + ')' : '') + '</option>'; }).join('') + '</select></div>' +
+        groups.map(function (g) { return '<option value="' + esc(g.code) + '"' + (g.code === c.group ? ' selected' : '') + '>' + esc(g.code + ' · ' + g.name) + (g.tier ? ' (' + esc(g.tier) + (g.gpTier ? ' · ' + esc(g.gpTier) : '') + ')' : '') + '</option>'; }).join('') + '</select></div>' +
       '<div class="field wide"><label for="cp-prod">สินค้า (รุ่นหรือบาร์โค้ด)</label><input type="search" id="cp-prod" autocomplete="off" placeholder="พิมพ์เพื่อค้นหา…" value="' + esc(c.product) + '"><div class="hint" id="cp-prod-info"></div></div>' +
       '<div class="field"><label for="cp-qty">จำนวน (ชิ้น)</label><input type="text" inputmode="numeric" class="num" id="cp-qty" value="' + esc(c.qty) + '"></div>' +
       '<div class="field"><label for="cp-gross">ราคาตั้ง (กรอกเมื่อไม่มีในรายการราคา)</label><input type="text" inputmode="decimal" class="num" id="cp-gross" value="' + esc(c.gross) + '" placeholder="ไม่บังคับ"></div>' +
@@ -510,7 +510,8 @@
     box.innerHTML =
       '<div class="cp-head">' +
         (r.customer ? '<div><span class="label">ลูกค้า</span><div><b>' + esc(r.customer.code) + '</b> ' + esc(r.customer.name) + '</div><div class="muted">' + esc(r.customer.channel || '-') + ' · กลุ่มจาก' + esc(r.customer.groupFrom) + '</div></div>' : '') +
-        '<div><span class="label">กลุ่มลูกค้า</span><div><b>' + esc(g.code) + '</b> ' + esc(g.name) + ' <span class="group-chip">ราคาฐาน ' + esc(g.tier || '–') + '</span></div>' +
+        '<div><span class="label">กลุ่มลูกค้า</span><div><b>' + esc(g.code) + '</b> ' + esc(g.name) + ' <span class="group-chip">ราคาฐาน ' + esc(g.tier || '–') + '</span>' +
+          (r.gpTier ? ' <span class="group-chip">GP Tier ' + esc(r.gpTier.code) + (r.gpTier.fallback ? ' → ' + esc(r.gpTier.used) : '') + '</span>' : '') + '</div>' +
           (g.creditDays !== null && g.creditDays !== undefined ? '<div class="muted">เครดิต ' + esc(g.creditDays) + ' วัน</div>' : '') + '</div>' +
         '<div><span class="label">สินค้า</span><div><b>' + esc(r.productKey) + '</b>' + (r.product && r.product.name !== r.product.key ? ' ' + esc(r.product.name) : '') + '</div>' +
           (r.product ? '<div class="muted">' + (r.product.barcode ? 'บาร์โค้ด ' + esc(r.product.barcode) + ' · ' : '') + 'รอบราคา ' + esc(r.product.priceList) + '</div>' : '') + '</div>' +
@@ -521,16 +522,25 @@
         '<div><span class="label">ส่วนลดรวมจากราคาตั้ง</span><div class="v2">' + pct(r.totalDiscount, 2) + '</div></div>' +
         '<div><span class="label">มูลค่ารวม ' + esc(r.qty) + ' ชิ้น</span><div class="v2">' + money(r.total, 2) + ' ฿</div></div></div>' +
       '<div class="table-wrap"><table class="cards cp-steps"><thead><tr><th class="num">ลำดับ</th><th>เงื่อนไข</th><th class="num">ค่า</th><th class="num">หัก (บาท/ชิ้น)</th><th class="num">ราคาหลังหัก</th></tr></thead><tbody>' +
-        '<tr class="gross"><td data-label="ลำดับ" class="num">–</td><td data-label="เงื่อนไข">ราคาตั้ง' + (r.grossSource === 'typed' ? ' (กรอกเอง)' : ' (' + esc(g.tier) + ')') + '</td><td data-label="ค่า" class="num"></td><td data-label="หัก" class="num"></td><td data-label="ราคา" class="num"><b>' + money(r.gross, 2) + '</b></td></tr>' +
+        '<tr class="gross"><td data-label="ลำดับ" class="num">–</td><td data-label="เงื่อนไข">ราคาตั้ง' + (r.grossSource === 'typed' ? ' (กรอกเอง)' : r.grossSource === 'wholesale' ? ' (ราคาส่ง Non-PC)' : ' (' + esc(g.tier) + ')') + '</td><td data-label="ค่า" class="num"></td><td data-label="หัก" class="num"></td><td data-label="ราคา" class="num"><b>' + money(r.gross, 2) + '</b></td></tr>' +
         (r.steps.length ? r.steps.map(function (s) {
           var val = s.method.indexOf('PCT') === 0 ? pct(Number(s.pct), 2) : money(s.thb, 2) + ' ฿';
           return '<tr><td data-label="ลำดับ" class="num">' + esc(s.seq) + '</td><td data-label="เงื่อนไข">' + esc(s.name || s.code) + ' <span class="muted">' + esc(s.code) + '</span>' +
+            (s.gpTier ? '<span class="tag">GP Tier</span>' : '') + (s.defaulted ? '<span class="tag up">ค่าเริ่มต้น</span>' : '') +
             (s.forCustomer ? '<span class="tag new">เฉพาะลูกค้า</span>' : '') + (s.scope && s.scope.toUpperCase() !== 'ALL' ? '<span class="tag up">เฉพาะรุ่นนี้</span>' : '') +
             '<div class="muted">' + esc(METHOD_TEXT[s.method] || s.method) + '</div></td>' +
             '<td data-label="ค่า" class="num">' + val + '</td><td data-label="หัก" class="num">' + money(s.deduction, 2) + '</td><td data-label="ราคา" class="num">' + money(s.after, 2) + '</td></tr>';
         }).join('') : '<tr><td colspan="5" class="muted">กลุ่มนี้ยังไม่มีเงื่อนไขส่วนลด — ราคาสุทธิเท่ากับราคาตั้ง</td></tr>') +
-      '</tbody></table></div>' +
+      '</tbody></table></div>' + wholesaleOptions(r.gpTier && r.gpTier.wholesale) +
       '<p class="hint" style="margin-top:8px">ราคาสำหรับใช้อ้างอิงเท่านั้น ราคาพิเศษนอกเงื่อนไขต้องขออนุมัติที่เมนู ขออนุมัติราคา</p>';
+  }
+
+  /** NON PC: other prices from the WHOLESALE tab (quantity / condition rows), shown as given in the sheet. */
+  function wholesaleOptions(w) {
+    if (!w || !w.options || !w.options.length) return '';
+    return '<h3 style="margin:12px 0 4px">ราคาส่ง Non-PC ตามเงื่อนไขอื่น</h3><dl class="kv">' +
+      w.options.map(function (o) { return '<dt>' + esc(o.label || '-') + '</dt><dd>' + money(o.net, 2) + ' ฿</dd>'; }).join('') + '</dl>' +
+      '<p class="hint">ราคาจากแท็บ WHOLESALE ก่อนหักเงื่อนไขของกลุ่ม</p>';
   }
 
   function viewNew() {
@@ -1218,7 +1228,7 @@
         '<dt>ข้ามต้นทุน (ST = N)</dt><dd>' + x.notForSale + (x.blankSaleStatus ? ' · ST ว่าง ' + x.blankSaleStatus + ' (นำเข้า)' : '') + '</dd></dl>' +
         (x.masterMismatchCount ? '<div class="banner" style="margin:8px 0 0">ราคาที่ระบบคำนวณไม่ตรงกับคอลัมน์ H/I/R ของ SMG MASTER ' + x.masterMismatchCount + ' รายการ: ' + x.masterMismatches.slice(0, 15).map(esc).join(', ') + (x.masterMismatchCount > 15 ? ' …' : '') + '</div>' : '') +
         (x.duplicateBarcodes.length ? '<div class="banner" style="margin:8px 0 0">บาร์โค้ดซ้ำในชีต (ใช้แถวแรก): ' + x.duplicateBarcodes.slice(0, 15).map(esc).join(', ') + '</div>' : '') +
-        (x.badBarcodes ? '<p class="hint">บาร์โค้ดไม่ถูกต้อง (ข้าม) ' + x.badBarcodes + ' แถว</p>' : '') + setReport(x);
+        (x.badBarcodes ? '<p class="hint">บาร์โค้ดไม่ถูกต้อง (ข้าม) ' + x.badBarcodes + ' แถว</p>' : '') + setReport(x) + gpReport(x);
     }
     return '<div class="card stack-gap"><div class="row" style="justify-content:space-between"><h2 style="margin:0">ซิงค์ราคา SMG จาก Google Sheets</h2><div class="row">' +
       '<button class="btn small ghost" id="sync-refresh">รีเฟรช</button>' +
@@ -1237,6 +1247,17 @@
     return '<h3 style="margin:12px 0 4px">ต้นทุนชุดเซ็ต (แท็บ relationship)</h3><dl class="kv"><dt>ใช้ได้</dt><dd>' + x.setCostUsed + ' เซ็ต จาก ' + x.setRows + ' แถว' +
       (x.setNoBarcode ? ' · ไม่มีบาร์โค้ด ' + x.setNoBarcode + ' แถว' : '') + (x.setNotInCatalogue ? ' · ไม่อยู่ในรอบราคานี้ ' + x.setNotInCatalogue : '') + '</dd>' + skipped + '</dl>' +
       (skipped ? '<p class="hint">เซ็ตที่ข้ามจะแสดงว่า "ไม่มีต้นทุน" จนกว่าจะแก้ในชีต ดูรายการทั้งหมดที่แท็บ "ตรวจสอบเซ็ต" ของไฟล์ COST UPDATE 2021 for import</p>' : '');
+  }
+
+  /** Per-item GP columns of SMG MASTER and the NON PC wholesale list (counts and barcodes only). */
+  function gpReport(x) {
+    var list = function (label, eans) { return eans.length ? '<dt>' + label + '</dt><dd>' + eans.length + ' · ' + eans.slice(0, 10).map(esc).join(', ') + (eans.length > 10 ? ' …' : '') + '</dd>' : ''; };
+    return '<h3 style="margin:12px 0 4px">GP รายสินค้า / ราคาส่ง Non-PC</h3><dl class="kv">' +
+      '<dt>GP จาก SMG MASTER</dt><dd>' + (x.gpColumns.length ? x.gpRated + ' รายการ · คอลัมน์ ' + x.gpColumns.map(esc).join(', ') : 'ยังไม่ได้อ่าน (ตั้งช่วง MASTER!A1:Y ใน n8n)') + '</dd>' +
+      list('GP ผิดปกติ (ข้าม)', x.gpBadRates) +
+      '<dt>ราคาส่ง Non-PC (WHOLESALE)</dt><dd>' + (x.wholesale ? x.wholesaleUsed + ' รายการ จาก ' + x.wholesaleRows + ' แถว' +
+        (x.wholesaleBadRows ? ' · ข้าม ' + x.wholesaleBadRows + ' แถว' : '') + (x.wholesaleNotInCatalogue ? ' · ไม่อยู่ในรอบราคานี้ ' + x.wholesaleNotInCatalogue : '') : 'ยังไม่ได้อ่าน (ตั้งค่าใน n8n)') + '</dd>' +
+      list('บาร์โค้ด TRUE ซ้ำ (ใช้แถวแรก)', x.wholesaleDuplicates) + '</dl>';
   }
 
   /** Customer Price Mapping sheet (ราคาตามลูกค้า): last import and what is loaded. Synced with the same button. */
