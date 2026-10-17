@@ -119,6 +119,7 @@ function displayStatus(r, today) {
 }
 
 const canSeeCost = (user) => user.canSeeCost === true;
+const canSeeGpOf = (user) => user.canSeeGp === true;
 
 /**
  * Returns a row → browser view function for this user. Loads group rules (for MU bands) and the
@@ -256,7 +257,7 @@ async function getBootstrap(ctx) {
     settings: { defaultValidityDays: settings.DEFAULT_VALIDITY_DAYS, maxValidityDays: settings.MAX_VALIDITY_DAYS },
     products, bundles, projects, landed, customers, priceLists, today,
     customerGroups: (await db.query('select code, name, price_tier, gp_tier from customer_groups order by code')).rows
-      .map((g) => ({ code: g.code, name: g.name, tier: g.price_tier, gpTier: g.gp_tier || '' }))
+      .map((g) => ({ code: g.code, name: g.name, tier: g.price_tier, gpTier: canSeeGpOf(user) ? g.gp_tier || '' : '' }))
   };
   if (out.user.canApprove) {
     out.pendingCount = Number((await db.query(`select count(*) from requests where status = 'Pending'`)).rows[0].count);
@@ -477,7 +478,7 @@ async function customerPriceCheck(ctx, payload) {
         use = gpTierDefs().get(tierDef.fallback);
         gpTier.used = use.code;
         gpTier.fallback = true;
-        flags.push(`ไม่มีในใบราคา Non-PC (WHOLESALE) — ใช้ GP Tier ${use.code} แทน`);
+        flags.push(`ไม่มีในใบราคา Non-PC (WHOLESALE) — ใช้ราคาดีลเลอร์${ctx.user.canSeeGp === true ? ' GP Tier ' + use.code : 'มาตรฐาน'}แทน`);
       }
     }
     if (use) {
@@ -512,10 +513,12 @@ async function customerPriceCheck(ctx, payload) {
     steps: w.steps, net: w.net, netExVat: round(w.net / (1 + vat), 2), total: round(w.net * qty, 2), totalDiscount: w.totalDiscount, vatRate: vat
   };
   if (ctx.user.canSeeGp !== true) {
-    // Net prices only: no GP %, amounts or running prices per step (any of them gives the % away).
-    out.steps = out.steps.map((s) => ({ seq: s.seq, code: s.code, name: s.name, method: s.method, category: s.category, scope: s.scope,
-      forCustomer: s.forCustomer, gpTier: s.gpTier }));
+    // Net prices only. Steps go entirely: amounts, running prices, term names ("ดีลเลอร์ T15") and the GP tier code all give the % away.
+    out.stepCount = out.steps.length;
+    out.steps = [];
     delete out.totalDiscount;
+    out.group = Object.assign({}, group, { gpTier: '' });
+    out.gpTier = gpTier ? { wholesale: gpTier.wholesale } : null;
     out.gpHidden = true;
   }
   return out;

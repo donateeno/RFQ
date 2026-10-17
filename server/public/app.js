@@ -523,7 +523,7 @@
       '<div class="cp-head">' +
         (r.customer ? '<div><span class="label">ลูกค้า</span><div><b>' + esc(r.customer.code) + '</b> ' + esc(r.customer.name) + '</div><div class="muted">' + esc(r.customer.channel || '-') + ' · กลุ่มจาก' + esc(r.customer.groupFrom) + '</div></div>' : '') +
         '<div><span class="label">กลุ่มลูกค้า</span><div><b>' + esc(g.code) + '</b> ' + esc(g.name) + ' <span class="group-chip">ราคาฐาน ' + esc(g.tier || '–') + '</span>' +
-          (r.gpTier ? ' <span class="group-chip">GP Tier ' + esc(r.gpTier.code) + (r.gpTier.fallback ? ' → ' + esc(r.gpTier.used) : '') + '</span>' : '') + '</div>' +
+          (r.gpTier && r.gpTier.code ? ' <span class="group-chip">GP Tier ' + esc(r.gpTier.code) + (r.gpTier.fallback ? ' → ' + esc(r.gpTier.used) : '') + '</span>' : '') + '</div>' +
           (g.creditDays !== null && g.creditDays !== undefined ? '<div class="muted">เครดิต ' + esc(g.creditDays) + ' วัน</div>' : '') + '</div>' +
         '<div><span class="label">สินค้า</span><div><b>' + esc(r.productKey) + '</b>' + (r.product && r.product.name !== r.product.key ? ' ' + esc(r.product.name) : '') + '</div>' +
           (r.product ? '<div class="muted">' + (r.product.barcode ? 'บาร์โค้ด ' + esc(r.product.barcode) + ' · ' : '') + 'รอบราคา ' + esc(r.product.priceList) + '</div>' : '') + '</div>' +
@@ -535,11 +535,7 @@
         '<div><span class="label">มูลค่ารวม ' + esc(r.qty) + ' ชิ้น</span><div class="v2">' + money(r.total, 2) + ' ฿</div></div></div>' +
       '<div class="table-wrap"><table class="cards cp-steps"><thead><tr><th class="num">ลำดับ</th><th>เงื่อนไข</th><th class="num">ค่า</th><th class="num">หัก (บาท/ชิ้น)</th><th class="num">ราคาหลังหัก</th></tr></thead><tbody>' +
         '<tr class="gross"><td data-label="ลำดับ" class="num">–</td><td data-label="เงื่อนไข">ราคาตั้ง' + (r.grossSource === 'typed' ? ' (กรอกเอง)' : r.grossSource === 'wholesale' ? ' (ราคาส่ง Non-PC)' : ' (' + esc(g.tier) + ')') + '</td><td data-label="ค่า" class="num"></td><td data-label="หัก" class="num"></td><td data-label="ราคา" class="num"><b>' + money(r.gross, 2) + '</b></td></tr>' +
-        (r.steps.length ? r.steps.map(function (s) {
-          if (r.gpHidden) {
-            return '<tr><td data-label="ลำดับ" class="num">' + esc(s.seq) + '</td><td data-label="เงื่อนไข" colspan="4">' + esc(s.name || s.code) +
-              (s.forCustomer ? '<span class="tag new">เฉพาะลูกค้า</span>' : '') + '</td></tr>';
-          }
+        (r.gpHidden ? '<tr><td colspan="5" class="muted">หักส่วนลดและค่าธรรมเนียมตามเงื่อนไขของลูกค้า ' + esc(r.stepCount) + ' ขั้น</td></tr>' : r.steps.length ? r.steps.map(function (s) {
           var val = s.method.indexOf('PCT') === 0 ? pct(Number(s.pct), 2) : money(s.thb, 2) + ' ฿';
           return '<tr><td data-label="ลำดับ" class="num">' + esc(s.seq) + '</td><td data-label="เงื่อนไข">' + esc(s.name || s.code) + ' <span class="muted">' + esc(s.code) + '</span>' +
             (s.gpTier ? '<span class="tag">GP Tier</span>' : '') + (s.defaulted ? '<span class="tag up">ค่าเริ่มต้น</span>' : '') +
@@ -547,7 +543,7 @@
             '<div class="muted">' + esc(METHOD_TEXT[s.method] || s.method) + '</div></td>' +
             '<td data-label="ค่า" class="num">' + val + '</td><td data-label="หัก" class="num">' + money(s.deduction, 2) + '</td><td data-label="ราคา" class="num">' + money(s.after, 2) + '</td></tr>';
         }).join('') : '<tr><td colspan="5" class="muted">กลุ่มนี้ยังไม่มีเงื่อนไขส่วนลด — ราคาสุทธิเท่ากับราคาตั้ง</td></tr>') +
-      '</tbody></table></div>' + (r.gpHidden ? '<p class="hint">แสดงเฉพาะชื่อเงื่อนไข — สิทธิ์ดู % GP และส่วนลดแต่ละขั้นกำหนดโดยเจ้าของระบบ</p>' : '') +
+      '</tbody></table></div>' + (r.gpHidden ? '<p class="hint">แสดงเฉพาะราคาสุทธิ — สิทธิ์ดู % GP และส่วนลดแต่ละขั้นกำหนดโดยเจ้าของระบบ</p>' : '') +
       wholesaleOptions(r.gpTier && r.gpTier.wholesale) +
       '<p class="hint" style="margin-top:8px">ราคาสำหรับใช้อ้างอิงเท่านั้น ราคาพิเศษนอกเงื่อนไขต้องขออนุมัติที่เมนู ขออนุมัติราคา</p>';
   }

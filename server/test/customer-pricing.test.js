@@ -158,7 +158,7 @@ test('GP tier per group: per-item GP from SMG MASTER, BT compounding, T24 + Exw,
   const r = await sync(s);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.ok(r.body.data.errors.some((e) => /BADTIER GP Tier "T99" ไม่ถูกต้อง/.test(e)), r.body.data.errors.join('|'));
-  const boot = await sales.call('getBootstrap');
+  const boot = await owner.call('getBootstrap');
   assert.equal(boot.customerGroups.find((g) => g.code === 'SOUVANNY_T24').gpTier, 'T24');
   assert.equal(boot.customerGroups.find((g) => g.code === 'BADTIER').gpTier, '', 'unknown tier: loaded without one');
 
@@ -192,13 +192,22 @@ test('GP tier per group: per-item GP from SMG MASTER, BT compounding, T24 + Exw,
 
 test('GP % is for the owner and the users the owner grants it to; sales and supervisors see net prices only, never cost', async () => {
   const q = { groupCode: 'DEALER_T18', productKey: 'HOOD-GP' };
-  const hidden = (r) => r.gpHidden === true && !('totalDiscount' in r) && r.steps.every((s) => !('pct' in s) && !('deduction' in s) && !('after' in s) && !('thb' in s));
+  const hidden = (r) => r.gpHidden === true && !('totalDiscount' in r) && r.steps.length === 0;
   for (const c of [sales, sup]) {
     const r = await price(c, q);
     assert.equal(r.net, 24591.8, 'net price is shown');
     assert.ok(hidden(r), JSON.stringify(r.steps));
-    assert.deepEqual(r.steps.map((s) => s.name), ['ส่วนลดดีลเลอร์ T18'], 'step names only');
+    assert.equal(r.stepCount, 1);
+    const rest = JSON.stringify(Object.assign({}, r, { group: null }));
+    assert.ok(!/T18|ส่วนลดดีลเลอร์|"pct"|"deduction"/.test(rest), 'no tier code, term names or amounts: ' + rest);
+    assert.equal(r.group.gpTier, '');
+    assert.equal((await c.call('getBootstrap')).customerGroups.find((g) => g.code === 'DEALER_T18').gpTier, '', 'nor in the group list');
   }
+  const fb = await price(sales, { groupCode: 'DEALER_NOPC', productKey: 'HOOD-GP' });
+  assert.ok(fb.flags.some((f) => /ใช้ราคาดีลเลอร์มาตรฐานแทน/.test(f)) && !/T20/.test(JSON.stringify(fb.flags)));
+  assert.deepEqual(fb.gpTier, { wholesale: null });
+  const np = await price(sales, { groupCode: 'DEALER_NOPC', productKey: 'HP30-NONPC' });
+  assert.deepEqual([np.net, np.gpTier.wholesale.options[0].net], [501.5, 480], 'NON PC net prices are net prices: shown');
   assert.ok(!hidden(await price(owner, q)));
 
   await assert.rejects(sup.call('listUsers'), /เฉพาะเจ้าของระบบ/);
